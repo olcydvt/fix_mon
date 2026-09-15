@@ -1,0 +1,72 @@
+# Prometheus alerting rules for fixmon.
+#
+# Thresholds here are starting points, not recommendations - tune them against
+# the actual behaviour of each counterparty before enabling paging.
+
+groups:
+  - name: fixmon-session
+    rules:
+      - alert: FixSessionDown
+        expr: fixmon_session_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "FIX session {{ $labels.session }} is not logged on"
+
+      - alert: FixSessionStale
+        expr: fixmon_session_state == 5
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "FIX session {{ $labels.session }} logged on but silent"
+          description: "No inbound message for longer than the heartbeat tolerance."
+
+      - alert: FixSessionFlapping
+        expr: increase(fixmon_disconnects_total[15m]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.session }} disconnected more than 3 times in 15m"
+
+      - alert: FixSeqNumTooLow
+        expr: increase(fixmon_seq_too_low_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "MsgSeqNum too low on {{ $labels.session }}"
+          description: "Usually needs a manual sequence reset agreed with the counterparty."
+
+      - alert: FixRejectRateElevated
+        expr: |
+          sum by (session) (rate(fixmon_session_rejects_total[5m]))
+          + sum by (session) (rate(fixmon_business_rejects_total[5m])) > 0.1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Elevated reject rate on {{ $labels.session }}"
+
+      - alert: FixHeartbeatTimeouts
+        expr: increase(fixmon_heartbeat_timeouts_total[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Heartbeat timeout on {{ $labels.session }}"
+
+  - name: fixmon-collector
+    rules:
+      - alert: FixmonDroppingEvents
+        expr: rate(fixmon_events_dropped_total[5m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "fixmon is dropping events - internal queue full"
+          description: "Metrics and the event store are now incomplete. Raise queue_size or investigate store latency."
+
+      - alert: FixmonStoreErrors
+        expr: increase(fixmon_store_write_errors_total[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "fixmon event store write errors"
+
+      - alert: FixmonNoData
+        expr: up{job="fixmon"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "fixmon collector is not being scraped"

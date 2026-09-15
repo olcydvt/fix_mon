@@ -1,0 +1,471 @@
+{
+  "title": "FIX Sessions",
+  "uid": "fixmon-sessions",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "session",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "fixmon-prom"
+        },
+        "query": "label_values(fixmon_session_up, session)",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Session state",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "description": "1 disconnected, 2 connecting, 3 logon pending, 4 logged on, 5 stale",
+      "targets": [
+        {
+          "expr": "fixmon_session_state{session=~\"$session\"}",
+          "legendFormat": "{{session}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "DISCONNECTED",
+                  "color": "red",
+                  "index": 0
+                },
+                "2": {
+                  "text": "CONNECTING",
+                  "color": "orange",
+                  "index": 1
+                },
+                "3": {
+                  "text": "LOGON PENDING",
+                  "color": "yellow",
+                  "index": 2
+                },
+                "4": {
+                  "text": "LOGGED ON",
+                  "color": "green",
+                  "index": 3
+                },
+                "5": {
+                  "text": "STALE",
+                  "color": "red",
+                  "index": 4
+                }
+              }
+            }
+          ]
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Seconds since last inbound message",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "description": "The fastest way to see a silent session. Compare against the session's heartbeat interval.",
+      "targets": [
+        {
+          "expr": "fixmon_last_message_age_seconds{session=~\"$session\"}",
+          "legendFormat": "{{session}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 35
+              },
+              {
+                "color": "red",
+                "value": 65
+              }
+            ]
+          }
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Disconnects (1h)",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum by (session) (increase(fixmon_disconnects_total{session=~\"$session\"}[1h]))",
+          "legendFormat": "{{session}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Message rate by type",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "expr": "sum by (msg_type_name, direction) (rate(fixmon_messages_total{session=~\"$session\"}[1m]))",
+          "legendFormat": "{{msg_type_name}} {{direction}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 8
+          }
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reject rate by reason",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "description": "Session rejects (35=3), business rejects (35=j) and rejected ExecutionReports, split by reason code. The single most useful panel during an incident.",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(fixmon_session_rejects_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "session reject {{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (reason) (rate(fixmon_business_rejects_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "business reject {{reason}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (reason) (rate(fixmon_exec_rejects_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "exec reject {{reason}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 8
+          }
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sequence health",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "description": "Gaps are reported twice - once derived from the message stream, once as narrated by the engine. Filter on src to pick one; a divergence between them is itself worth investigating.",
+      "targets": [
+        {
+          "expr": "sum by (src) (increase(fixmon_seq_gaps_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "gaps ({{src}})",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(fixmon_seq_too_low_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "seq too low",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (src) (increase(fixmon_resend_requests_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "resend requests ({{src}})",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "drawStyle": "bars"
+          }
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Session events",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "description": "Straight from the engine's event log - the layer that says why, not just what.",
+      "targets": [
+        {
+          "expr": "sum by (type) (increase(fixmon_session_events_total{session=~\"$session\", type!~\"logon_sent|logon_received|session_created\"}[5m]))",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector health",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "description": "Watch dropped events and queue depth. A rising queue means the consumer is behind and metrics are about to become unreliable.",
+      "targets": [
+        {
+          "expr": "fixmon_queue_depth",
+          "legendFormat": "queue depth",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(fixmon_events_dropped_total[1m])",
+          "legendFormat": "dropped/s",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(fixmon_store_rows_written_total[1m])",
+          "legendFormat": "rows written/s",
+          "refId": "C"
+        },
+        {
+          "expr": "fixmon_metric_series",
+          "legendFormat": "series count",
+          "refId": "D"
+        },
+        {
+          "expr": "increase(fixmon_store_write_errors_total[5m])",
+          "legendFormat": "store errors",
+          "refId": "E"
+        },
+        {
+          "expr": "sum by (adapter) (rate(fixmon_lines_read_total[1m]))",
+          "legendFormat": "lines/s {{adapter}}",
+          "refId": "F"
+        },
+        {
+          "expr": "sum by (adapter) (increase(fixmon_parse_failures_total[5m]))",
+          "legendFormat": "unmatched {{adapter}}",
+          "refId": "G"
+        },
+        {
+          "expr": "fixmon_metric_series_rejected_total",
+          "legendFormat": "series refused (cardinality cap)",
+          "refId": "H"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Missing messages per gap",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      },
+      "description": "How many messages were actually missing, not just how many gaps occurred. A single 400-message gap is a different problem from forty 10-message gaps.",
+      "targets": [
+        {
+          "expr": "sum by (src) (increase(fixmon_seq_gap_messages_total{session=~\"$session\"}[5m]))",
+          "legendFormat": "missing ({{src}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "drawStyle": "bars"
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sequence numbers",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      },
+      "description": "Flat lines mean the session stopped moving. Sharp drops mean a sequence reset.",
+      "targets": [
+        {
+          "expr": "fixmon_next_expected_seq_num{session=~\"$session\"}",
+          "legendFormat": "next expected in",
+          "refId": "A"
+        },
+        {
+          "expr": "fixmon_last_outgoing_seq_num{session=~\"$session\"}",
+          "legendFormat": "last outgoing",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconnect attempts",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fixmon-prom"
+      },
+      "description": "Rising reconnects with no successful logon is the signature of a credential, certificate or schedule problem rather than a network blip.",
+      "targets": [
+        {
+          "expr": "sum by (session) (increase(fixmon_reconnect_attempts_total[5m]))",
+          "legendFormat": "reconnects {{session}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (session) (increase(fixmon_logon_rejects_total[5m]))",
+          "legendFormat": "logon rejects {{session}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "drawStyle": "bars"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+# Conan alternative to vcpkg. Both work through CMake's find_package, so
+# ResolveSQLite3.cmake picks them up on the "system" tier with no changes.
+#
+#   conan install . --output-folder=build --build=missing
+#   cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+
+[requires]
+sqlite3/[>=3.45]
+
+[generators]
+CMakeDeps
+CMakeToolchain

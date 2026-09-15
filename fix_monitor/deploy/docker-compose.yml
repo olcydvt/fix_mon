@@ -1,0 +1,91 @@
+# End-to-end demo stack: collector, Prometheus, Grafana, and a log generator
+# standing in for a FIX engine.
+#
+#   docker compose up --build     (Compose v2)
+#   docker-compose up --build     (Compose v1, note the hyphen)
+#   Grafana    http://localhost:3000   (admin / admin)
+#
+# Host ports can be overridden when something else already holds them:
+#   FIXMON_PORT=9110 GRAFANA_PORT=3001 docker compose up --build
+#   Prometheus http://localhost:9090
+#   Collector  http://localhost:9109/metrics
+#
+# Host ports are overridable, because demo.sh leaves a collector on 9109 and
+# these two demo paths would otherwise fight over it:
+#
+#   FIXMON_PORT=9209 GRAFANA_PORT=3100 docker compose up --build
+#
+# or put the same lines in a .env file next to this one.
+#
+# The loggen service writes QuickFIX-shaped logs into a shared volume that the
+# collector tails read-only - the same arrangement as production, where the
+# engine owns the logs and the collector only reads them.
+
+# Compose file format 3.7, not 3.8: docker-compose v1.25.0 rejects 3.8.
+# Compose v2 accepts this and only prints a harmless "version is obsolete" note.
+version: "3.7"
+
+services:
+  loggen:
+    image: python:3.12-slim
+    container_name: fixmon-loggen
+    volumes:
+      - fixlogs:/logs
+      - ../tools/gen_logs.py:/gen_logs.py:ro
+    # --duration 0 would exit immediately; loop so the demo keeps producing.
+    command: >
+      sh -c "while true; do python3 /gen_logs.py --dir /logs --duration 120 --rate 8; done"
+    restart: unless-stopped
+
+  fixmon:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: fixmon
+    depends_on:
+      - loggen
+    volumes:
+      - fixlogs:/logs:ro          # read-only: the collector never writes logs
+      - fixdata:/var/lib/fixmon   # the event store lives here
+      - ./fixmon.docker.ini:/etc/fixmon/fixmon.ini:ro
+    ports:
+      - "${FIXMON_PORT:-9109}:9109"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: fixmon-prometheus
+    depends_on:
+      - fixmon
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../grafana/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: fixmon-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/fixmon-sessions.json:/var/lib/grafana/dashboards/fixmon-sessions.json:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  fixlogs:
+  fixdata:
+  promdata:
+  grafanadata:

@@ -1,0 +1,19 @@
+20260915-18:46:37.439 : Created session
+20260915-18:46:37.439 : Connecting to venue-gw.example.com:9823
+20260915-18:46:37.440 : Initiated logon request
+20260915-18:46:37.641 : Received logon response
+20260915-18:46:42.678 : MsgSeqNum too high, expecting 68 but received 74
+20260915-18:46:42.679 : Sent ResendRequest FROM: 68 TO: 73
+20260915-18:46:53.666 : Sending test request TEST-1
+20260915-18:46:53.666 : Test Request timed out. Session will be disconnected.
+20260915-18:46:55.686 : Disconnecting: Socket exception, connection reset by peer
+20260915-18:46:56.687 : Attempting to reconnect in 5 seconds
+20260915-18:46:56.688 : Connecting to venue-gw.example.com:9823
+20260915-18:46:56.688 : Initiated logon request
+20260915-18:46:56.688 : Received logon response
+20260915-18:46:59.713 : MsgSeqNum too low, expecting 293 but received 4
+20260915-18:47:01.729 : Disconnecting: Socket exception
+20260915-18:47:01.729 : Attempting to reconnect in 5 seconds
+20260915-18:47:01.729 : Initiated logon request
+20260915-18:47:01.729 : Logon rejected: Invalid credentials for BROKER1
+20260915-18:47:04.651 : Vendor-specific condition XYZ-4471 raised on channel 2
