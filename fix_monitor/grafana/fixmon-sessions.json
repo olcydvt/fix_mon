@@ -3,9 +3,9 @@
   "uid": "fixmon-sessions",
   "timezone": "browser",
   "schemaVersion": 39,
-  "refresh": "10s",
+  "refresh": "5s",
   "time": {
-    "from": "now-6h",
+    "from": "now-15m",
     "to": "now"
   },
   "templating": {
@@ -217,17 +217,17 @@
       "description": "Session rejects (35=3), business rejects (35=j) and rejected ExecutionReports, split by reason code. The single most useful panel during an incident.",
       "targets": [
         {
-          "expr": "sum by (reason) (rate(fixmon_session_rejects_total{session=~\"$session\"}[5m]))",
+          "expr": "sum by (reason) (rate(fixmon_session_rejects_total{session=~\"$session\"}[1m]))",
           "legendFormat": "session reject {{reason}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (reason) (rate(fixmon_business_rejects_total{session=~\"$session\"}[5m]))",
+          "expr": "sum by (reason) (rate(fixmon_business_rejects_total{session=~\"$session\"}[1m]))",
           "legendFormat": "business reject {{reason}}",
           "refId": "B"
         },
         {
-          "expr": "sum by (reason) (rate(fixmon_exec_rejects_total{session=~\"$session\"}[5m]))",
+          "expr": "sum by (reason) (rate(fixmon_exec_rejects_total{session=~\"$session\"}[1m]))",
           "legendFormat": "exec reject {{reason}}",
           "refId": "C"
         }
@@ -257,17 +257,17 @@
       "description": "Gaps are reported twice - once derived from the message stream, once as narrated by the engine. Filter on src to pick one; a divergence between them is itself worth investigating.",
       "targets": [
         {
-          "expr": "sum by (src) (increase(fixmon_seq_gaps_total{session=~\"$session\"}[5m]))",
+          "expr": "sum by (src) (increase(fixmon_seq_gaps_total{session=~\"$session\"}[1m]))",
           "legendFormat": "gaps ({{src}})",
           "refId": "A"
         },
         {
-          "expr": "sum(increase(fixmon_seq_too_low_total{session=~\"$session\"}[5m]))",
+          "expr": "sum(increase(fixmon_seq_too_low_total{session=~\"$session\"}[1m]))",
           "legendFormat": "seq too low",
           "refId": "B"
         },
         {
-          "expr": "sum by (src) (increase(fixmon_resend_requests_total{session=~\"$session\"}[5m]))",
+          "expr": "sum by (src) (increase(fixmon_resend_requests_total{session=~\"$session\"}[1m]))",
           "legendFormat": "resend requests ({{src}})",
           "refId": "C"
         }
@@ -297,7 +297,7 @@
       "description": "Straight from the engine's event log - the layer that says why, not just what.",
       "targets": [
         {
-          "expr": "sum by (type) (increase(fixmon_session_events_total{session=~\"$session\", type!~\"logon_sent|logon_received|session_created\"}[5m]))",
+          "expr": "sum by (type) (increase(fixmon_session_events_total{session=~\"$session\", type!~\"logon_sent|logon_received|session_created\"}[1m]))",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
@@ -350,7 +350,7 @@
           "refId": "D"
         },
         {
-          "expr": "increase(fixmon_store_write_errors_total[5m])",
+          "expr": "increase(fixmon_store_write_errors_total[1m])",
           "legendFormat": "store errors",
           "refId": "E"
         },
@@ -360,7 +360,7 @@
           "refId": "F"
         },
         {
-          "expr": "sum by (adapter) (increase(fixmon_parse_failures_total[5m]))",
+          "expr": "sum by (adapter) (increase(fixmon_parse_failures_total[1m]))",
           "legendFormat": "unmatched {{adapter}}",
           "refId": "G"
         },
@@ -391,7 +391,7 @@
       "description": "How many messages were actually missing, not just how many gaps occurred. A single 400-message gap is a different problem from forty 10-message gaps.",
       "targets": [
         {
-          "expr": "sum by (src) (increase(fixmon_seq_gap_messages_total{session=~\"$session\"}[5m]))",
+          "expr": "sum by (src) (increase(fixmon_seq_gap_messages_total{session=~\"$session\"}[1m]))",
           "legendFormat": "missing ({{src}})",
           "refId": "A"
         }
@@ -448,12 +448,12 @@
       "description": "Rising reconnects with no successful logon is the signature of a credential, certificate or schedule problem rather than a network blip.",
       "targets": [
         {
-          "expr": "sum by (session) (increase(fixmon_reconnect_attempts_total[5m]))",
+          "expr": "sum by (session) (increase(fixmon_reconnect_attempts_total[1m]))",
           "legendFormat": "reconnects {{session}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (session) (increase(fixmon_logon_rejects_total[5m]))",
+          "expr": "sum by (session) (increase(fixmon_logon_rejects_total[1m]))",
           "legendFormat": "logon rejects {{session}}",
           "refId": "B"
         }

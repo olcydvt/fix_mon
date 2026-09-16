@@ -1,6 +1,10 @@
 global:
-  scrape_interval: 10s
-  evaluation_interval: 10s
+  # Live monitoring, not capacity planning. A disconnect is worth seeing in
+  # seconds, and the collector exports a few dozen series per session, so the
+  # cost of scraping fast is nothing. Raise this if you ever point Prometheus
+  # at many collectors at once.
+  scrape_interval: 2s
+  evaluation_interval: 2s
 
 rule_files:
   - /etc/prometheus/alerts.yml
