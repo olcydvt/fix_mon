@@ -422,7 +422,7 @@ int main(int argc, char** argv) {
                    registry.redacted_series());
 
             for (auto& a : adapters) {
-                Labels al{{"adapter", a->name()}};
+                Labels al{{"adapter", a->name()}, {"session", a->session_id()}};
                 mirror(registry, "fixmon_lines_read_total", al, a->lines_read());
                 mirror(registry, "fixmon_parse_failures_total", al, a->parse_errors());
             }

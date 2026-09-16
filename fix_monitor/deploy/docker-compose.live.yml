@@ -1,0 +1,65 @@
+# Live mode: Prometheus + Grafana only.
+#
+# The difference from docker-compose.yml is what is being watched. There, the
+# collector runs as a container and tails logs written by a fake engine. Here
+# the collector runs natively on this host against live.ini, tailing the two
+# real QuickFIX engines, so only the dashboard half belongs in Docker.
+#
+#   docker compose -f docker-compose.live.yml -p fixmon-live up -d
+#   docker compose -f docker-compose.live.yml -p fixmon-live down
+#
+#   Grafana    http://localhost:3000   (admin / admin)
+#   Prometheus http://localhost:9090
+#   Collector  http://localhost:9109/metrics   (native, not a container)
+#
+# A separate -p project name keeps this stack from colliding with the demo one.
+# Ports are still overridable if something already holds 3000 or 9090:
+#
+#   GRAFANA_PORT=3100 PROMETHEUS_PORT=9091 docker compose -f docker-compose.live.yml -p fixmon-live up -d
+
+version: "3.7"
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: fixmon-live-prometheus
+    # Docker 20.10+ resolves this to the host's gateway address, which is how a
+    # container scrapes a process running outside Docker. Without it the target
+    # is simply unreachable and every panel reads "No data" while the collector
+    # is perfectly healthy - a confusing failure worth spending one line on.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus.live.yml:/etc/prometheus/prometheus.yml:ro
+      - ../grafana/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata_live:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: fixmon-live-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    # The service is named 'prometheus' on purpose: the provisioned datasource
+    # points at http://prometheus:9090, so it works here unchanged.
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/fixmon-sessions.json:/var/lib/grafana/dashboards/fixmon-sessions.json:ro
+      - ../grafana/fixmon-config.json:/var/lib/grafana/dashboards/fixmon-config.json:ro
+      - grafanadata_live:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  promdata_live:
+  grafanadata_live:
+

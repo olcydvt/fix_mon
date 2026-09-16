@@ -102,6 +102,18 @@ void import_quickfix_configs(AppConfig& cfg, const fs::path& base_dir) {
                 cfg.sessions.push_back(std::move(d));
             } else {
                 cfg.notes.push_back("merged engine settings into " + id + " from " + path);
+                // The operator's [session] block wins on log paths. Say so
+                // explicitly: reading the engine cfg may already have complained
+                // that it found no logs under its FileLogPath, and without this
+                // line that complaint reads like a failure long after it stopped
+                // being true. Happens whenever the engine runs on a different
+                // host or OS than the collector and its path means nothing here.
+                if (!it->message_log_path.empty() &&
+                    it->message_log_path != d.message_log_path) {
+                    cfg.notes.push_back("using [session] log paths for " + id +
+                                        "; FileLogPath from " + path +
+                                        " was not usable from here and is ignored");
+                }
                 fill_from_quickfix(*it, d);
             }
         }

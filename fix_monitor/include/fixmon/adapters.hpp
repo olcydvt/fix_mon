@@ -29,6 +29,7 @@ public:
     virtual const char* name() const          = 0;
     virtual uint64_t    lines_read()  const   = 0;
     virtual uint64_t    parse_errors() const  = 0;
+    virtual const std::string& session_id() const = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ public:
     const char* name() const override { return "message_log"; }
     uint64_t    lines_read()   const override { return lines_read_.load(); }
     uint64_t    parse_errors() const override { return parse_errors_.load(); }
+    const std::string& session_id() const override { return session_id_; }
 
     // Exposed for unit testing without touching the filesystem.
     bool parse_line(const std::string& line, Event& out);
@@ -85,6 +87,7 @@ public:
     const char* name() const override { return "event_log"; }
     uint64_t    lines_read()   const override { return lines_read_.load(); }
     uint64_t    parse_errors() const override { return parse_errors_.load(); }
+    const std::string& session_id() const override { return session_id_; }
 
     bool parse_line(const std::string& line, Event& out);
 

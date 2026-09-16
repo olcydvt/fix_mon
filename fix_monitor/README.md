@@ -258,6 +258,76 @@ line no rule recognises.
 
 For the full stack with Prometheus and Grafana on top, see `DEMO.md`.
 
+### Watching a real engine pair
+
+Monitoring both sides of a live session at once - an initiator and an acceptor -
+is the case this was built for, and it is worth writing down the three things
+that are not obvious.
+
+Point the collector at both engine configs. `--quickfix` is repeatable, and so
+is `quickfix_config` in the ini:
+
+```ini
+[global]
+db_path         = /var/tmp/fixmon-live.db
+quickfix_config = /path/to/initiator/quickfix_config.cfg
+quickfix_config = /path/to/acceptor/quickfix_config.cfg
+```
+
+You get two sessions, mirror images of each other, because each engine names its
+logs from its own SenderCompID:
+
+```
+FIX.4.4:BROKER->VENUE     (the initiator's view)
+FIX.4.4:VENUE->BROKER     (the acceptor's view)
+```
+
+Do not add their message counts together - that double counts. The value is in
+the comparison: when `fixmon_next_expected_seq_num` diverges between the two
+sides you have a sequence problem, and when a reject shows on one side but not
+the other you know which direction dropped it.
+
+**When the engine and the collector see different filesystems.** An engine
+running on Windows writes `FileLogPath=C:\...`, which means nothing to a
+collector on Linux reading the same disk over a mount. The engine config is
+correct for the engine and must not be edited, so override just the log paths
+for that one session. Identity has to match the engine's session exactly or this
+becomes a third session instead of an override:
+
+```ini
+[session]
+begin_string   = FIX.4.4
+sender_comp_id = VENUE
+target_comp_id = BROKER
+message_log    = /mnt/c/.../FIX.4.4-VENUE-BROKER.messages.current.log
+event_log      = /mnt/c/.../FIX.4.4-VENUE-BROKER.event.current.log
+```
+
+Startup confirms the override took effect, so you never have to guess:
+
+```
+config: using [session] log paths for FIX.4.4:VENUE->BROKER;
+        FileLogPath from .../quickfix_config.cfg was not usable from here and is ignored
+```
+
+**Keep the event store off a drvfs mount.** SQLite runs in WAL mode here, and
+WAL needs shared-memory mapping that `/mnt/c` does not provide reliably. Logs
+are only read across the mount; the database belongs on the local filesystem.
+
+**Prometheus has to reach back out to the host.** When the collector runs
+natively and only the dashboards are containerised, use
+`deploy/docker-compose.live.yml`, which scrapes `host.docker.internal:9109` and
+maps it to the host gateway. The demo compose file is not a substitute: it
+brings up its own collector against generated logs.
+
+```bash
+./build/fixmon live.ini                       # collector, natively
+cd deploy && docker compose -f docker-compose.live.yml -p fixmon-live up -d
+```
+
+Confirm on Prometheus' Targets page that `fixmon` is UP. If every panel reads
+"No data" while the collector is healthy, that target is where to look.
+
 ## Configuration
 
 ```ini

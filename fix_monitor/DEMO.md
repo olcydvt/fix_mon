@@ -1,44 +1,48 @@
-# Demo — uçtan uca kurulum
+# Demo — end to end
 
-İki yol var. Hangisini seçeceğin ne göstermek istediğine bağlı.
+Two routes. Which one you pick depends on what you want to show.
 
-| | Kurulum | Ne gösterir | Süre |
+| | Setup | What it shows | Time |
 |---|---|---|---|
-| **A. Sadece collector** | cmake + g++ | Toplama, parse, state, event store | ~2 dk |
-| **B. Tam yığın** | Docker | Yukarıdakiler + Prometheus + Grafana dashboard | ~5 dk |
+| **A. Collector only** | cmake + g++ | Collection, parsing, state, event store | ~2 min |
+| **B. Full stack** | Docker | The above plus Prometheus and Grafana dashboards | ~5 min |
+
+A third route exists once you have real engines: point the collector at their
+configs and containerise only the dashboards. See **Watching a real engine
+pair** in `README.md` and `deploy/docker-compose.live.yml`.
 
 ---
 
-## A. Sadece collector (Docker'sız)
+## A. Collector only (no Docker)
 
-### Kurulum
+### Setup
 
 ```bash
 # Debian/Ubuntu
 sudo apt install -y g++ cmake make python3
 
-# sqlite opsiyonel: yoksa CMake indirip statik gömer
+# sqlite is optional: without it CMake downloads and links it statically
 sudo apt install -y libsqlite3-dev
 ```
 
-macOS: `brew install cmake python3` (sqlite zaten sistemde var).
+macOS: `brew install cmake python3` (sqlite is already there).
 
-### Çalıştır
+### Run
 
 ```bash
-./demo.sh          # 40 saniyelik koşu
-./demo.sh 120      # daha uzun
+./demo.sh          # a 40 second run
+./demo.sh 120      # longer
 ```
 
-Script sırayla: derler, selftest'i koşturur, temiz bir demo ortamı kurar,
-collector'ı başlatır, log üretecini çalıştırıp arızaları enjekte eder, sonra
-session durumunu, metrikleri ve event store'dan incident timeline'ını basar.
+The script builds, runs the self-test, sets up a clean demo environment, starts
+the collector, runs the log generator with failures injected, then prints
+session state, the metrics, and the incident timeline out of the event store.
 
-Terminalde çalıştırırsan collector açık kalır, Prometheus'u `localhost:9109`'a
-yönlendirebilirsin. Script içinden çağırırsan kendiliğinden kapanır
-(`DEMO_KEEP_RUNNING=0` ile zorlanabilir).
+Run it from a terminal and the collector stays up so you can point Prometheus at
+`localhost:9109`. Called from another script it shuts itself down
+(`DEMO_KEEP_RUNNING=0` forces that).
 
-### Beklenen çıktı
+### Expected output
 
 ```
 --- key metrics (/metrics) ---
@@ -61,55 +65,56 @@ fixmon_events_dropped_total 0
   17:38:54  event_log    reconnect_attempt      Attempting to reconnect in 5 seconds
 ```
 
-Demoda göstereceğin nokta bu son blok: `source` sütununda iki kaynağın tek
-zaman ekseninde birleşmesi. Mesaj logu reject'leri veriyor, event logu
-disconnect'in **sebebini** veriyor. Hiçbiri tek başına bu tabloyu üretemez.
+That last block is the point of the demo: look at the `source` column and watch
+two sources merge onto one timeline. The message log gives you the rejects, the
+event log gives you the **reason** for the disconnect. Neither one produces this
+table on its own.
 
 ---
 
-## B. Tam yığın (Docker)
+## B. Full stack (Docker)
 
-### Kurulum
+### Setup
 
-Sadece Docker gerekiyor — derleyici, sqlite, Python hiçbiri host'ta lazım değil.
+Docker is all you need — no compiler, no sqlite, no Python on the host.
 
 ```bash
 docker --version
-docker compose version     # v2 varsa bu çalışır
-docker-compose --version   # yoksa v1 kurulu demektir
+docker compose version     # works if you have v2
+docker-compose --version   # if not, you have v1
 ```
 
-**Compose v1 ve v2 farkı önemli.** Komut adı farklı (`docker compose` vs
-`docker-compose`) ve v1 dosya formatı 3.8'i reddediyor. `docker-compose.yml`
-bu yüzden **format 3.7** kullanıyor; ikisiyle de çalışıyor. v2, `version`
-anahtarı için zararsız bir "obsolete" uyarısı basar, görmezden gel.
+**The v1/v2 difference matters.** The command name differs (`docker compose` vs
+`docker-compose`) and v1 rejects file format 3.8. That is why
+`docker-compose.yml` uses **format 3.7**, which both accept. v2 prints a
+harmless "obsolete" note about the `version` key; ignore it.
 
-Dosya iki parser'la da doğrulandı: `docker-compose config` (v1.25.0) ve
+The file was checked against both parsers: `docker-compose config` (v1.25.0) and
 `docker compose config` (v2).
 
-v1 kullanıyorsan makineni v2'ye geçir. v1 2019'dan kalma, Python tabanlı ve
-artık bakımı yapılmıyor:
+If you are on v1, move the machine to v2. v1 dates from 2019, is Python based
+and is no longer maintained:
 
 ```bash
 mkdir -p ~/.docker/cli-plugins
-ARCH=$(uname -m)   # x86_64 veya aarch64
+ARCH=$(uname -m)   # x86_64 or aarch64
 curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" \
   -o ~/.docker/cli-plugins/docker-compose
 chmod +x ~/.docker/cli-plugins/docker-compose
 docker compose version
 ```
 
-Tek binary, ~32 MB, eski `docker-compose`'u silmene gerek yok — yan yana
-durabilirler. Sistem geneli istiyorsan `~/.docker/cli-plugins` yerine
-`/usr/local/lib/docker/cli-plugins`.
+One binary, ~32 MB, and you do not have to remove the old `docker-compose` —
+they coexist. For a system-wide install use `/usr/local/lib/docker/cli-plugins`
+instead of `~/.docker/cli-plugins`.
 
-**Ama repodaki `version: "3.7"` satırını silme.** v2'de sadece bir satır
-kozmetik uyarı üretiyor; karşılığında dosya eski `docker-compose` kurulu her
-makinede çalışıyor. Orta ölçekli broker'ların çoğu eski Ubuntu LTS koşuyor ve
-apt'ten gelen 1.x ile geliyor — müşteri sunucusunda açılmayan bir compose
-dosyası, bir uyarı satırından çok daha pahalı.
+**But do not delete the `version: "3.7"` line from the repo.** On v2 it costs
+one cosmetic warning line. In exchange the file opens on every machine that
+still has the old `docker-compose` installed. Plenty of mid-size brokers run an
+older Ubuntu LTS and get 1.x from apt, and a compose file that will not open on
+a customer's server is far more expensive than a warning.
 
-### Çalıştır
+### Run
 
 ```bash
 cd deploy
@@ -117,36 +122,37 @@ docker compose up --build      # Compose v2
 docker-compose up --build      # Compose v1
 ```
 
-İlk derleme birkaç dakika sürer ve **bu sırada `loggen` çoktan `Up` görünür,
-`fixmon` ise henüz ortada yoktur**. Başka bir terminalde `docker compose ps`
-çalıştırıp tek servis görürsen bu bir arıza değil, build hâlâ sürüyordur.
-Yalnız image'ı kurmak için: `docker compose build fixmon`.
+The first build takes a few minutes, and **while it runs `loggen` is already
+`Up` and `fixmon` does not exist yet**. If you run `docker compose ps` in
+another terminal and see a single service, that is not a fault, the build is
+still going. To build just the image: `docker compose build fixmon`.
 
-Ardından:
+Then:
 
-| Servis | Adres | Not |
+| Service | Address | Note |
 |---|---|---|
-| Grafana | http://localhost:3000 | admin / admin, anonim görüntüleme açık |
-| Prometheus | http://localhost:9090 | Alerts sekmesinde kurallar görünür |
-| Collector | http://localhost:9109/metrics | ham metrikler |
-| Session JSON | http://localhost:9109/sessions | debug |
+| Grafana | http://localhost:3000 | admin / admin, anonymous viewing enabled |
+| Prometheus | http://localhost:9090 | rules show up under Alerts |
+| Collector | http://localhost:9109/metrics | raw metrics |
+| Session JSON | http://localhost:9109/sessions | debugging |
 
-Grafana'da dashboard ve datasource provisioning ile geliyor, elle kurulum yok.
-**FIX Sessions** ve **FIX Session Discovery** dashboard'ları hazır gelir.
+Grafana comes with its dashboards and datasource provisioned, nothing to set up
+by hand. **FIX Sessions** and **FIX Session Discovery** are both ready.
 
-Dört servis var:
+Four services:
 
-- `loggen` — FIX engine'i taklit ediyor, paylaşılan volume'a QuickFIX formatında
-  log yazıyor, döngüde çalışıyor
-- `fixmon` — logları **read-only** mount ile okuyor (prod'daki durumla aynı:
-  loglar engine'in, collector sadece okur)
-- `prometheus` — collector'ı 10 saniyede bir scrape ediyor, alert kurallarını
-  yüklüyor
-- `grafana` — datasource + dashboard önceden tanımlı
+- `loggen` — stands in for a FIX engine, writing QuickFIX-shaped logs into a
+  shared volume, looping
+- `fixmon` — reads those logs through a **read-only** mount, the same
+  arrangement as production: the logs belong to the engine, the collector only
+  reads
+- `prometheus` — scrapes the collector every 10 seconds and loads the alert
+  rules
+- `grafana` — datasource and dashboards predefined
 
-Collector'a hiçbir yerde session tanımlanmıyor: `fixmon.docker.ini` içinde
-`[session]` bloğu yok. Session'ı da, log dosya adlarını da engine'in kendi
-`quickfix.docker.cfg` dosyasından çıkarıyor. İlk log satırları bunu söylüyor:
+Nothing tells the collector which sessions exist: `fixmon.docker.ini` has no
+`[session]` block. It derives the session, and the log file names, from the
+engine's own `quickfix.docker.cfg`. The first log lines say so:
 
 ```
 config: imported FIX.4.4:BROKER1->VENUEX from /etc/fixmon/quickfix.cfg
@@ -156,17 +162,17 @@ session: FIX.4.4:BROKER1->VENUEX  hb=30s  initiator  <- /etc/fixmon/quickfix.cfg
     credentials ignored: Username=<redacted> Password=<redacted>
 ```
 
-### Yığının sağlığını tek komutla doğrula
+### Verify the stack with one command
 
 ```bash
 tools/verify_stack.sh
 ```
 
-Dört container'ı, collector'ın healthcheck'ini, session keşfinin engine
-cfg'sinden geldiğini, **iki log kaynağının da** bağlı olduğunu, cfg'deki
-credential değerlerinin uçlarda görünmediğini, Prometheus hedefini ve iki
-Grafana dashboard'unu kontrol eder. Demodan önce koştur; sahnede "No data"
-görmekten iyidir.
+It checks the four containers, the collector's healthcheck, that session
+discovery came from the engine cfg, that **both log sources** are attached, that
+the credential values in the cfg do not appear on any endpoint, the Prometheus
+target, and both Grafana dashboards. Run it before a demo; better than finding
+"No data" on stage.
 
 ```
 discovery from the engine config
@@ -188,166 +194,190 @@ grafana
 stack verified
 ```
 
-`fixmon_session_log_sources` **0 ise** session yapılandırılmış ama hiçbir şey
-okunmuyor demektir; diğer bütün metrikler sağlıklı görünürken tek başına bu
-metrik arızayı gösterir. `1` ise resmin yarısı var (genelde event log adı
-tutmamıştır).
+`fixmon_session_log_sources` at **0** means the session is configured but
+nothing is being read — the one failure where every other metric looks perfectly
+healthy and only this one shows it. At `1` you have half the picture, usually
+because the event log name did not match.
 
-### Credential'ın sızmadığını göstermek
+### Showing that credentials do not leak
 
 ```bash
-grep -i password deploy/quickfix.docker.cfg    # cfg'de duruyor
+grep -i password deploy/quickfix.docker.cfg    # it is in the cfg
 curl -s --noproxy '*' localhost:9109/metrics | grep -ci 'password\|username'   # 0
 ```
 
-### Ne göstereceksin
+### What to show
 
-1. **Dashboard açılışı** — session LOGGED ON, mesaj oranları akıyor
-2. **Keşif** — collector'a session tanımlanmadı, engine cfg'sinden buldu;
-   `FIX Session Discovery` dashboard'u bunu gösteriyor
-3. **Sequence health paneli** — gap'in iki kaynaktan da işaretlendiği an;
-   `src` label'ı ayrımı gösteriyor
-4. **Reject rate paneli** — reject kodlarına göre kırılım
-5. **Session events paneli** — disconnect, heartbeat timeout, reconnect
-6. **Prometheus → Alerts** — `FixSessionDown`, `FixSeqNumTooLow` kuralları
-7. **Collector health paneli** — drop yok, kuyruk boş, parse edilemeyen satır
-   sayısı (üreteç bilerek tanınmayan bir satır yazıyor, orada görünür)
+1. **Open the dashboard** — session LOGGED ON, message rates flowing
+2. **Discovery** — no session was configured on the collector, it found one in
+   the engine cfg; the `FIX Session Discovery` dashboard shows this
+3. **Sequence health panel** — the moment a gap is flagged by both sources; the
+   `src` label keeps them apart
+4. **Reject rate panel** — broken down by reject code
+5. **Session events panel** — disconnect, heartbeat timeout, reconnect
+6. **Prometheus → Alerts** — `FixSessionDown`, `FixSeqNumTooLow`
+7. **Collector health panel** — no drops, empty queue, and the unparsed line
+   count (the generator writes an unrecognised line on purpose, it shows here)
 
-### Arızayı canlı tetiklemek
+### Triggering a failure live
 
-Demo sırasında session'ı gerçekten düşürmek etkileyici oluyor:
+Actually taking the session down during a demo lands well:
 
 ```bash
 docker compose stop loggen     # v1: docker-compose stop loggen
 ```
 
-30–60 saniye içinde `fixmon_last_message_age_seconds` tırmanır, session
-**STALE**'e geçer, `FixSessionStale` alert'i Pending'e düşer. Sonra:
+Within 30–60 seconds `fixmon_last_message_age_seconds` climbs, the session goes
+**STALE**, and `FixSessionStale` moves to Pending. Then:
 
 ```bash
 docker compose start loggen
 ```
 
-### Temizlik
+### Cleanup
 
 ```bash
-docker compose down -v      # -v volume'ları da siler
+docker compose down -v      # -v removes the volumes too
 # v1: docker-compose down -v
 ```
 
 ---
 
-## Test edilme durumu
+## What has actually been tested
 
-Dürüst olmak gerekirse:
+Being honest about it:
 
-| Parça | Durum |
+| Piece | Status |
 |---|---|
-| Collector, adaptörler, state machine, event store | Test edildi, 60+ kontrol geçiyor |
-| `demo.sh` uçtan uca | Çalıştırıldı, yukarıdaki çıktı gerçek |
-| Metrik isimleri ↔ dashboard/alert sorguları | Otomatik karşılaştırıldı, uyumsuzluk yok |
-| Datasource uid ↔ dashboard uid | Doğrulandı |
-| Tüm YAML/JSON ve compose mount yolları | Doğrulandı |
-| Compose dosyası, v1.25.0 parser'ı | `docker-compose config` ile doğrulandı, geçerli |
-| Compose dosyası, v2 parser'ı | `docker compose config` ile doğrulandı, geçerli (sadece `version` uyarısı) |
-| **Docker Compose yığınının kendisi** | **Çalıştırıldı** — Rocky Linux 8 / WSL2, Docker 26.1.3, dört servis `Up`, `fixmon` healthy |
-| `tools/verify_stack.sh` | Çalışan yığına karşı koştu, 16 kontrolün tamamı geçti |
-| **Windows / MSVC derlemesi** | **Denenmedi** |
+| Collector, adapters, state machine, event store | Tested, 100+ checks pass |
+| `demo.sh` end to end | Run; the output above is real |
+| Metric names ↔ dashboard and alert queries | Compared automatically, no mismatch |
+| Datasource uid ↔ dashboard uid | Verified |
+| Every YAML/JSON and compose mount path | Verified |
+| Compose file, v1.25.0 parser | `docker-compose config`, valid |
+| Compose file, v2 parser | `docker compose config`, valid (only the `version` warning) |
+| **The Docker Compose stack itself** | **Run** — Rocky Linux 8 / WSL2, Docker 26.1.3, four services `Up`, `fixmon` healthy |
+| `tools/verify_stack.sh` | Run against the live stack, all 16 checks passed |
+| **A real QuickFIX engine pair** | **Run** — live initiator and acceptor, both directions monitored |
+| **Windows / MSVC build** | **Not attempted** (MinGW works, MSVC untried) |
 
-Yığın gerçekten ayağa kalktı: image derlendi, selftest build içinde geçti,
-session engine cfg'sinden keşfedildi, iki log kaynağı da bağlandı, Prometheus
-hedefi UP geldi ve iki dashboard da provision oldu. Yukarıdaki `verify_stack.sh`
-çıktısı o koşudan alındı.
+The stack really did come up: the image built, the self-test passed inside the
+build, the session was discovered from the engine cfg, both log sources
+attached, the Prometheus target came back UP and both dashboards provisioned.
+The `verify_stack.sh` output above is from that run.
+
+### The real-engine run
+
+This is the strongest evidence in the list. The collector was run against a
+**real QuickFIX initiator and acceptor**, not the log generator, and the
+following were observed live:
+
+- The session reached `logged_on`, with each direction tracked as its own
+  session
+- Killing one end produced a **disconnect**, and once the heartbeat tolerance
+  expired the session went **stale**
+- A **NewOrderSingle** that was sent showed up in the flow
+- With the session made persistent, the sequence number was changed by hand and
+  the collector caught the **sequence mismatch** and showed it on the Grafana
+  Sequence Number panel
+
+That last one matters most. The gap is both derived from the message stream and
+narrated in the engine's event log, and the `src` label keeps the two apart.
+Seeing that against a real engine's own wording is a different thing from seeing
+it against text the generator imitates.
+
+To reproduce this setup, see **Watching a real engine pair** in `README.md`.
 
 ---
 
-## Sorun giderme
+## Troubleshooting
 
-**`cmake` sqlite bulamıyor** — normal, otomatik indirmeye düşecek. Ağ yoksa:
-`sudo apt install libsqlite3-dev` veya
+**`cmake` cannot find sqlite** — expected, it falls back to downloading. With no
+network: `sudo apt install libsqlite3-dev`, or
 `-DFIXMON_SQLITE_PROVIDER=local -DFIXMON_SQLITE_SOURCE_DIR=...`
 
-**Metrikler boş** — `logs/` altındaki iki dosya var mı, `fixmon.ini`'deki
-yollarla eşleşiyor mu. Collector başladıktan sonra yazılan satırları görür;
-mevcut içeriği de okumak için `from_beginning = true`.
+**Metrics are empty** — check the two files under `logs/` exist and match the
+paths in `fixmon.ini`. The collector only sees lines written after it starts;
+set `from_beginning = true` to read existing content too.
 
-**`bind: address already in use`** — host'ta o portu başka bir şey tutuyor.
-En sık sebebi daha önce çalıştırdığın `./demo.sh`: interaktif modda collector
-bilerek açık kalıyor ve 9109'u tutuyor.
+**`bind: address already in use`** — something else on the host holds that port.
+Usually a `./demo.sh` you ran earlier: in interactive mode the collector stays
+up on purpose and keeps 9109.
 
 ```bash
-ss -ltnp | grep 9109        # kim tutuyor
-pkill -f 'build/fixmon'     # demo.sh'in bıraktığı süreci öldür
+ss -ltnp | grep 9109        # who holds it
+pkill -f 'build/fixmon'     # kill what demo.sh left behind
 ```
 
-Ya da host portlarını değiştir — compose bunu ortam değişkeniyle kabul ediyor:
+Or change the host ports — compose takes them from the environment:
 
 ```bash
 FIXMON_PORT=9110 GRAFANA_PORT=3001 PROMETHEUS_PORT=9091 docker compose up --build
 ```
 
-Değişken adları compose dosyasındakilerle birebir aynı olmalı. Yanlış yazarsan
-compose sessizce varsayılana düşer ve port çakışması sürer — hata vermez.
+The names have to match the compose file exactly. Get one wrong and compose
+silently falls back to the default, the port clash persists, and nothing errors.
 
-Collector'ın host portu aslında opsiyonel: Prometheus ona compose ağı üzerinden
-`fixmon:9109` ile ulaşıyor. Host'tan `curl /metrics` yapmayacaksan `fixmon`
-servisinin `ports:` bloğunu tamamen silebilirsin.
+The collector's host port is optional anyway: Prometheus reaches it over the
+compose network as `fixmon:9109`. If you are not going to `curl /metrics` from
+the host you can delete the `ports:` block from the `fixmon` service entirely.
 
-**Sadece `loggen` ayakta, diğer üç servis yok** — büyük ihtimalle arıza değil.
-`loggen` hazır bir image çekiyor ve saniyeler içinde başlıyor; `fixmon` ise
-kaynaktan derleniyor ve ilk seferde birkaç dakika sürüyor. Prometheus ve Grafana
-ona bağlı olduğu için sırada bekliyorlar. Build'in hâlâ sürdüğünü şuradan
-anlarsın:
+**Only `loggen` is up, the other three are missing** — most likely not a fault.
+`loggen` pulls a ready-made image and starts in seconds; `fixmon` builds from
+source and takes a few minutes the first time. Prometheus and Grafana depend on
+it, so they queue behind it. To confirm the build is still running:
 
 ```bash
-docker compose logs -f fixmon      # build bitince container logları akar
-docker compose build fixmon        # ya da sadece build'i izole et
+docker compose logs -f fixmon      # container logs start flowing once it builds
+docker compose build fixmon        # or isolate the build
 ```
 
-Build gerçekten patlıyorsa hatayı bu ikinci komut açıkça gösterir. Build bittiği
-hâlde servisler gelmiyorsa `docker compose up -d` ile tekrar dene.
+If the build genuinely fails, that second command shows the error plainly. If it
+finished and the services still are not there, try `docker compose up -d` again.
 
-**Grafana açılmıyor / servis kapalı** — `docker-compose ps` ile dört servis de
-`Up` mı bak. Liste boşsa stack hiç kalkmamıştır; `docker-compose logs --tail=50`
-sebebini gösterir. En sık neden fixmon image build'inin patlaması: `grafana`
-→ `prometheus` → `fixmon` zinciriyle bağlı olduğu için biri patlayınca Grafana
-hiç başlamıyor. Sadece build'i denemek için `docker-compose build fixmon`.
+**Grafana will not open / a service is down** — check all four are `Up` with
+`docker-compose ps`. An empty list means the stack never started;
+`docker-compose logs --tail=50` says why. The most common cause is the fixmon
+image failing to build: the `grafana` → `prometheus` → `fixmon` chain means one
+failure keeps Grafana from starting at all. To try just the build:
+`docker-compose build fixmon`.
 
-**"Unsupported config option for services"** — Compose v1 kullanıyorsun ve
-dosyada `version` anahtarı yok demektir. Bu repodaki dosyada var (3.7); başka
-bir kopya kullanıyor olabilirsin.
+**"Unsupported config option for services"** — you are on Compose v1 and the
+file has no `version` key. The one in this repo does (3.7); you may be using a
+different copy.
 
-**Grafana "No data"** — Prometheus'ta Status → Targets, `fixmon` hedefi UP mı.
-Değilse container adı çözülmüyor demektir.
+**Grafana "No data"** — in Prometheus, Status → Targets, check the `fixmon`
+target is UP. If it is not, the container name is not resolving.
 
-**`curl localhost:9109` beklenmedik bir cevap veriyor** — kurumsal ağlarda
-`http_proxy`/`https_proxy` ortam değişkenleri tanımlıysa curl localhost'a giden
-isteği bile proxy'ye yollar ve proxy'nin hata sayfasını okursun. Bu yüzden
-`tools/verify_stack.sh` tüm çağrılarında `--noproxy '*'` kullanıyor. Elle
-denerken sen de kullan:
+**`curl localhost:9109` returns something unexpected** — on corporate networks,
+if `http_proxy`/`https_proxy` are set, curl sends even localhost requests to the
+proxy and you end up reading the proxy's error page. That is why
+`tools/verify_stack.sh` passes `--noproxy '*'` on every call. Do the same by
+hand:
 
 ```bash
 curl -s --noproxy '*' localhost:9109/metrics | head
 ```
 
-**`docker compose logs loggen` boş görünüyor** — Python stdout'u buffer'lıyor,
-üreteç çalışsa bile satırlar hemen görünmeyebilir. Logların akması gerçek bir
-sağlık göstergesi değil; volume'daki dosyalara bak:
+**`docker compose logs loggen` looks empty** — Python buffers stdout, so lines
+may not appear immediately even while the generator runs. Log output is not a
+real health signal here; look at the files in the volume instead:
 
 ```bash
 docker compose exec fixmon sh -c 'wc -l /logs/*.log'
 ```
 
-**Session hep "unknown"** — `sender_comp_id` config'de logdaki tag 49 ile birebir
-eşleşmeli; yön tespiti buna dayanıyor.
+**Session stays "unknown"** — `sender_comp_id` in the config has to match tag 49
+in the log exactly; direction detection depends on it.
 
-**`unparsed` sayacı yükseliyor** — engine'in ifadeleri kural tablosuyla
-uyuşmuyor. Satırlar ham haliyle saklanıyor, kaybolmuyor:
-`SELECT text FROM events WHERE session_event='unparsed'` ile bakıp
-`src/event_log_adapter.cpp` içindeki tabloya kural ekle.
+**The `unparsed` counter is climbing** — the engine's wording does not match the
+rule table. The lines are kept raw, not lost:
+`SELECT text FROM events WHERE session_event='unparsed'`, then add a rule to the
+table in `src/event_log_adapter.cpp`.
 
-Demo yığınında bu sayacın **sıfırdan büyük olması normal**: `tools/gen_logs.py`
-her turda bilerek tanınmayan bir satır (`Vendor-specific condition XYZ-4471...`)
-yazıyor. Amaç tam olarak bu davranışı göstermek — collector bilmediği satırı
-atmıyor, sayıyor ve saklıyor.
+In the demo stack this counter being **above zero is normal**:
+`tools/gen_logs.py` deliberately writes one unrecognised line per round
+(`Vendor-specific condition XYZ-4471...`). Showing that behaviour is the point —
+the collector does not discard a line it does not understand, it counts it and
+stores it.
 

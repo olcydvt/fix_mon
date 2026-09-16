@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Live mode: the collector is NOT a container. It runs natively on this host
+  # against live.ini, tailing the two real QuickFIX engines. Prometheus has to
+  # reach back out of its container to the host, and host.docker.internal is
+  # what docker-compose.live.yml maps to the host gateway for exactly this.
+  #
+  # The job name stays 'fixmon' so the alert rules and the provisioned
+  # dashboards keep matching without a single query change.
+  - job_name: fixmon
+    static_configs:
+      - targets: ['host.docker.internal:9109']
+
