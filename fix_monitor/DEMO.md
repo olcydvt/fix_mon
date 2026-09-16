@@ -117,7 +117,12 @@ docker compose up --build      # Compose v2
 docker-compose up --build      # Compose v1
 ```
 
-İlk derleme birkaç dakika sürer. Ardından:
+İlk derleme birkaç dakika sürer ve **bu sırada `loggen` çoktan `Up` görünür,
+`fixmon` ise henüz ortada yoktur**. Başka bir terminalde `docker compose ps`
+çalıştırıp tek servis görürsen bu bir arıza değil, build hâlâ sürüyordur.
+Yalnız image'ı kurmak için: `docker compose build fixmon`.
+
+Ardından:
 
 | Servis | Adres | Not |
 |---|---|---|
@@ -127,7 +132,7 @@ docker-compose up --build      # Compose v1
 | Session JSON | http://localhost:9109/sessions | debug |
 
 Grafana'da dashboard ve datasource provisioning ile geliyor, elle kurulum yok.
-**FIX Sessions** dashboard'unu aç.
+**FIX Sessions** ve **FIX Session Discovery** dashboard'ları hazır gelir.
 
 Dört servis var:
 
@@ -139,15 +144,73 @@ Dört servis var:
   yüklüyor
 - `grafana` — datasource + dashboard önceden tanımlı
 
+Collector'a hiçbir yerde session tanımlanmıyor: `fixmon.docker.ini` içinde
+`[session]` bloğu yok. Session'ı da, log dosya adlarını da engine'in kendi
+`quickfix.docker.cfg` dosyasından çıkarıyor. İlk log satırları bunu söylüyor:
+
+```
+config: imported FIX.4.4:BROKER1->VENUEX from /etc/fixmon/quickfix.cfg
+session: FIX.4.4:BROKER1->VENUEX  hb=30s  initiator  <- /etc/fixmon/quickfix.cfg
+    messages: /logs/FIX.4.4-BROKER1-VENUEX.messages.current.log
+    events  : /logs/FIX.4.4-BROKER1-VENUEX.event.current.log
+    credentials ignored: Username=<redacted> Password=<redacted>
+```
+
+### Yığının sağlığını tek komutla doğrula
+
+```bash
+tools/verify_stack.sh
+```
+
+Dört container'ı, collector'ın healthcheck'ini, session keşfinin engine
+cfg'sinden geldiğini, **iki log kaynağının da** bağlı olduğunu, cfg'deki
+credential değerlerinin uçlarda görünmediğini, Prometheus hedefini ve iki
+Grafana dashboard'unu kontrol eder. Demodan önce koştur; sahnede "No data"
+görmekten iyidir.
+
+```
+discovery from the engine config
+  ok    session discovered: FIX.4.4:BROKER1->VENUEX
+  ok    both log sources attached (messages + event)
+  ok    reading logs (70645 lines)
+credentials
+  ok    2 credential values from the engine cfg absent from /metrics and /sessions
+  ok    no credential-shaped label names
+  ok    collector reports dropping 2 credential keys
+prometheus
+  ok    scrape target up
+  ok    12 alert rules loaded
+grafana
+  ok    grafana healthy
+  ok    dashboard provisioned: FIX Sessions
+  ok    dashboard provisioned: FIX Session Discovery
+
+stack verified
+```
+
+`fixmon_session_log_sources` **0 ise** session yapılandırılmış ama hiçbir şey
+okunmuyor demektir; diğer bütün metrikler sağlıklı görünürken tek başına bu
+metrik arızayı gösterir. `1` ise resmin yarısı var (genelde event log adı
+tutmamıştır).
+
+### Credential'ın sızmadığını göstermek
+
+```bash
+grep -i password deploy/quickfix.docker.cfg    # cfg'de duruyor
+curl -s --noproxy '*' localhost:9109/metrics | grep -ci 'password\|username'   # 0
+```
+
 ### Ne göstereceksin
 
 1. **Dashboard açılışı** — session LOGGED ON, mesaj oranları akıyor
-2. **Sequence health paneli** — gap'in iki kaynaktan da işaretlendiği an;
+2. **Keşif** — collector'a session tanımlanmadı, engine cfg'sinden buldu;
+   `FIX Session Discovery` dashboard'u bunu gösteriyor
+3. **Sequence health paneli** — gap'in iki kaynaktan da işaretlendiği an;
    `src` label'ı ayrımı gösteriyor
-3. **Reject rate paneli** — reject kodlarına göre kırılım
-4. **Session events paneli** — disconnect, heartbeat timeout, reconnect
-5. **Prometheus → Alerts** — `FixSessionDown`, `FixSeqNumTooLow` kuralları
-6. **Collector health paneli** — drop yok, kuyruk boş, parse edilemeyen satır
+4. **Reject rate paneli** — reject kodlarına göre kırılım
+5. **Session events paneli** — disconnect, heartbeat timeout, reconnect
+6. **Prometheus → Alerts** — `FixSessionDown`, `FixSeqNumTooLow` kuralları
+7. **Collector health paneli** — drop yok, kuyruk boş, parse edilemeyen satır
    sayısı (üreteç bilerek tanınmayan bir satır yazıyor, orada görünür)
 
 ### Arızayı canlı tetiklemek
@@ -187,12 +250,14 @@ Dürüst olmak gerekirse:
 | Tüm YAML/JSON ve compose mount yolları | Doğrulandı |
 | Compose dosyası, v1.25.0 parser'ı | `docker-compose config` ile doğrulandı, geçerli |
 | Compose dosyası, v2 parser'ı | `docker compose config` ile doğrulandı, geçerli (sadece `version` uyarısı) |
-| **Docker Compose yığınının kendisi** | **Çalıştırılmadı** — bu ortamda Docker daemon yok |
+| **Docker Compose yığınının kendisi** | **Çalıştırıldı** — Rocky Linux 8 / WSL2, Docker 26.1.3, dört servis `Up`, `fixmon` healthy |
+| `tools/verify_stack.sh` | Çalışan yığına karşı koştu, 16 kontrolün tamamı geçti |
 | **Windows / MSVC derlemesi** | **Denenmedi** |
 
-Compose dosyaları sözdizimi ve yol tutarlılığı açısından kontrol edildi ama
-`docker compose up` hiç koşmadı. İlk denemede image sürümleri veya derleme
-adımıyla ilgili bir pürüz çıkarsa şaşırma.
+Yığın gerçekten ayağa kalktı: image derlendi, selftest build içinde geçti,
+session engine cfg'sinden keşfedildi, iki log kaynağı da bağlandı, Prometheus
+hedefi UP geldi ve iki dashboard da provision oldu. Yukarıdaki `verify_stack.sh`
+çıktısı o koşudan alındı.
 
 ---
 
@@ -218,12 +283,29 @@ pkill -f 'build/fixmon'     # demo.sh'in bıraktığı süreci öldür
 Ya da host portlarını değiştir — compose bunu ortam değişkeniyle kabul ediyor:
 
 ```bash
-FIXMON_PORT=9110 GRAFANA_PORT=3001 PROM_PORT=9091 docker compose up --build
+FIXMON_PORT=9110 GRAFANA_PORT=3001 PROMETHEUS_PORT=9091 docker compose up --build
 ```
+
+Değişken adları compose dosyasındakilerle birebir aynı olmalı. Yanlış yazarsan
+compose sessizce varsayılana düşer ve port çakışması sürer — hata vermez.
 
 Collector'ın host portu aslında opsiyonel: Prometheus ona compose ağı üzerinden
 `fixmon:9109` ile ulaşıyor. Host'tan `curl /metrics` yapmayacaksan `fixmon`
 servisinin `ports:` bloğunu tamamen silebilirsin.
+
+**Sadece `loggen` ayakta, diğer üç servis yok** — büyük ihtimalle arıza değil.
+`loggen` hazır bir image çekiyor ve saniyeler içinde başlıyor; `fixmon` ise
+kaynaktan derleniyor ve ilk seferde birkaç dakika sürüyor. Prometheus ve Grafana
+ona bağlı olduğu için sırada bekliyorlar. Build'in hâlâ sürdüğünü şuradan
+anlarsın:
+
+```bash
+docker compose logs -f fixmon      # build bitince container logları akar
+docker compose build fixmon        # ya da sadece build'i izole et
+```
+
+Build gerçekten patlıyorsa hatayı bu ikinci komut açıkça gösterir. Build bittiği
+hâlde servisler gelmiyorsa `docker compose up -d` ile tekrar dene.
 
 **Grafana açılmıyor / servis kapalı** — `docker-compose ps` ile dört servis de
 `Up` mı bak. Liste boşsa stack hiç kalkmamıştır; `docker-compose logs --tail=50`
@@ -238,6 +320,24 @@ bir kopya kullanıyor olabilirsin.
 **Grafana "No data"** — Prometheus'ta Status → Targets, `fixmon` hedefi UP mı.
 Değilse container adı çözülmüyor demektir.
 
+**`curl localhost:9109` beklenmedik bir cevap veriyor** — kurumsal ağlarda
+`http_proxy`/`https_proxy` ortam değişkenleri tanımlıysa curl localhost'a giden
+isteği bile proxy'ye yollar ve proxy'nin hata sayfasını okursun. Bu yüzden
+`tools/verify_stack.sh` tüm çağrılarında `--noproxy '*'` kullanıyor. Elle
+denerken sen de kullan:
+
+```bash
+curl -s --noproxy '*' localhost:9109/metrics | head
+```
+
+**`docker compose logs loggen` boş görünüyor** — Python stdout'u buffer'lıyor,
+üreteç çalışsa bile satırlar hemen görünmeyebilir. Logların akması gerçek bir
+sağlık göstergesi değil; volume'daki dosyalara bak:
+
+```bash
+docker compose exec fixmon sh -c 'wc -l /logs/*.log'
+```
+
 **Session hep "unknown"** — `sender_comp_id` config'de logdaki tag 49 ile birebir
 eşleşmeli; yön tespiti buna dayanıyor.
 
@@ -245,3 +345,9 @@ eşleşmeli; yön tespiti buna dayanıyor.
 uyuşmuyor. Satırlar ham haliyle saklanıyor, kaybolmuyor:
 `SELECT text FROM events WHERE session_event='unparsed'` ile bakıp
 `src/event_log_adapter.cpp` içindeki tabloya kural ekle.
+
+Demo yığınında bu sayacın **sıfırdan büyük olması normal**: `tools/gen_logs.py`
+her turda bilerek tanınmayan bir satır (`Vendor-specific condition XYZ-4471...`)
+yazıyor. Amaç tam olarak bu davranışı göstermek — collector bilmediği satırı
+atmıyor, sayıyor ve saklıyor.
+

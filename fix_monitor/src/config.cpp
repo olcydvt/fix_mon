@@ -1,9 +1,14 @@
 #include "fixmon/config.hpp"
 
+#include "fixmon/quickfix_config.hpp"
+
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+
+namespace fs = std::filesystem;
 
 namespace fixmon {
 
@@ -38,13 +43,93 @@ size_t next_pow2(size_t v) {
     return p;
 }
 
+// A relative quickfix_config is relative to the ini that mentions it, not to
+// wherever the collector happens to be started from.
+std::string resolve_against(const std::string& path, const fs::path& base_dir) {
+    std::error_code ec;
+    if (fs::exists(path, ec)) return path;
+    if (!base_dir.empty()) {
+        fs::path alt = base_dir / path;
+        if (fs::exists(alt, ec)) return alt.string();
+    }
+    return path;
+}
+
+// Fills the blanks of an explicit [session] block from what the engine config
+// said about the same session. The operator's file wins wherever it spoke;
+// everything it left out comes from the engine, which is the point of reading
+// the engine config at all.
+void fill_from_quickfix(SessionConfig& dst, const SessionConfig& src) {
+    if (dst.message_log_path.empty())   dst.message_log_path   = src.message_log_path;
+    if (dst.event_log_path.empty())     dst.event_log_path     = src.event_log_path;
+    if (!dst.heartbeat_explicit)        dst.heartbeat_interval = src.heartbeat_interval;
+    if (dst.session_qualifier.empty())  dst.session_qualifier  = src.session_qualifier;
+    if (dst.sender_sub_id.empty())      dst.sender_sub_id      = src.sender_sub_id;
+    if (dst.sender_location_id.empty()) dst.sender_location_id = src.sender_location_id;
+    if (dst.target_sub_id.empty())      dst.target_sub_id      = src.target_sub_id;
+    if (dst.target_location_id.empty()) dst.target_location_id = src.target_location_id;
+    if (dst.connection_type.empty())    dst.connection_type    = src.connection_type;
+    if (dst.file_log_path.empty())      dst.file_log_path      = src.file_log_path;
+    if (dst.file_store_path.empty())    dst.file_store_path    = src.file_store_path;
+    if (dst.start_time.empty())         dst.start_time         = src.start_time;
+    if (dst.end_time.empty())           dst.end_time           = src.end_time;
+    if (dst.reconnect_interval == 0)    dst.reconnect_interval = src.reconnect_interval;
+    if (dst.origin.empty())             dst.origin             = src.origin;
+
+    dst.from_quickfix = true;
+    for (const auto& key : src.redacted_settings) {
+        if (std::find(dst.redacted_settings.begin(), dst.redacted_settings.end(), key) ==
+            dst.redacted_settings.end()) {
+            dst.redacted_settings.push_back(key);
+        }
+    }
+}
+
+// Imports every configured engine cfg and merges the result into cfg.sessions.
+void import_quickfix_configs(AppConfig& cfg, const fs::path& base_dir) {
+    for (const std::string& raw_path : cfg.quickfix_configs) {
+        const std::string path = resolve_against(raw_path, base_dir);
+
+        QuickFixSettings settings = load_quickfix_settings(path);
+        std::vector<SessionConfig> derived = sessions_from_quickfix(settings, &cfg.notes);
+
+        for (SessionConfig& d : derived) {
+            const std::string id = d.session_id();
+            auto it = std::find_if(cfg.sessions.begin(), cfg.sessions.end(),
+                                   [&](const SessionConfig& s) { return s.session_id() == id; });
+            if (it == cfg.sessions.end()) {
+                cfg.notes.push_back("imported " + id + " from " + path);
+                cfg.sessions.push_back(std::move(d));
+            } else {
+                cfg.notes.push_back("merged engine settings into " + id + " from " + path);
+                fill_from_quickfix(*it, d);
+            }
+        }
+    }
+}
+
+void finalize(AppConfig& cfg, const fs::path& base_dir) {
+    import_quickfix_configs(cfg, base_dir);
+
+    if (cfg.sessions.empty()) {
+        throw std::runtime_error(
+            "no sessions: add a [session] block, or point quickfix_config at the "
+            "engine's own cfg file");
+    }
+}
+
 }  // namespace
 
 std::string SessionConfig::session_id() const {
-    return begin_string + ":" + sender_comp_id + "->" + target_comp_id;
+    std::string id = begin_string + ":" + sender_comp_id + "->" + target_comp_id;
+    // A qualifier is what separates two sessions that share comp ids. Leaving
+    // it out would collapse them onto one metric series and one state machine.
+    if (!session_qualifier.empty()) id += ":" + session_qualifier;
+    return id;
 }
 
-AppConfig load_config(const std::string& path) {
+AppConfig load_config(const std::string& path,
+                      const std::vector<std::string>& extra_quickfix_configs) {
     std::ifstream in(path);
     if (!in) throw std::runtime_error("cannot open config file: " + path);
 
@@ -89,7 +174,13 @@ AppConfig load_config(const std::string& path) {
             else if (key == "target_comp_id")     current.target_comp_id   = val;
             else if (key == "message_log")        current.message_log_path = val;
             else if (key == "event_log")          current.event_log_path   = val;
-            else if (key == "heartbeat_interval") current.heartbeat_interval = std::stoi(val);
+            else if (key == "session_qualifier")  current.session_qualifier = val;
+            else if (key == "sender_sub_id")      current.sender_sub_id     = val;
+            else if (key == "target_sub_id")      current.target_sub_id     = val;
+            else if (key == "heartbeat_interval") {
+                current.heartbeat_interval = std::stoi(val);
+                current.heartbeat_explicit = true;
+            }
         } else {
             if      (key == "db_path")          cfg.db_path        = val;
             else if (key == "metrics_port")     cfg.metrics_port   = static_cast<uint16_t>(std::stoi(val));
@@ -100,11 +191,31 @@ AppConfig load_config(const std::string& path) {
             else if (key == "from_beginning")   cfg.from_beginning = to_bool(val);
             else if (key == "stale_after_multiple") cfg.stale_after_multiple = std::stoi(val);
             else if (key == "snapshot_interval_s")  cfg.snapshot_interval_s  = std::stoi(val);
+            // Repeatable: one engine cfg per line, or several comma separated.
+            else if (key == "quickfix_config") {
+                std::istringstream parts(val);
+                std::string one;
+                while (std::getline(parts, one, ',')) {
+                    one = trim(one);
+                    if (!one.empty()) cfg.quickfix_configs.push_back(one);
+                }
+            }
         }
     }
     commit_session();
 
-    if (cfg.sessions.empty()) throw std::runtime_error("no [session] blocks in config");
+    for (const std::string& p : extra_quickfix_configs) {
+        if (!p.empty()) cfg.quickfix_configs.push_back(p);
+    }
+
+    finalize(cfg, fs::path(path).parent_path());
+    return cfg;
+}
+
+AppConfig config_from_quickfix(const std::vector<std::string>& quickfix_configs) {
+    AppConfig cfg;
+    cfg.quickfix_configs = quickfix_configs;
+    finalize(cfg, fs::path{});
     return cfg;
 }
 

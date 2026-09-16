@@ -1,7 +1,10 @@
 #include "fixmon/metrics.hpp"
 
+#include "fixmon/redact.hpp"
+
 #include <cstring>
 #include <sstream>
+
 
 namespace fixmon {
 
@@ -19,6 +22,21 @@ double Gauge::value() const {
 }
 
 MetricRegistry::MetricRegistry(size_t max_series) : max_series_(max_series) {}
+
+// The values were already dropped by the config reader, so reaching here means
+// some other code path built a label out of a secret. Refuse the whole series
+// rather than the one label: a metric that silently loses a dimension is worse
+// than one that never appears and shows up in the refusal counter.
+bool MetricRegistry::refuse_sensitive(const Labels& labels) const {
+    for (const auto& [key, value] : labels) {
+        (void)value;
+        if (is_sensitive_key(key)) {
+            redacted_.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
+}
 
 void MetricRegistry::declare_counter(const std::string& name, const std::string& help) {
     std::unique_lock lock(mutex_);
@@ -55,6 +73,8 @@ std::string MetricRegistry::encode_labels(const Labels& labels) {
 }
 
 Counter* MetricRegistry::counter(const std::string& name, const Labels& labels) {
+    if (refuse_sensitive(labels)) return nullptr;
+
     const std::string key = encode_labels(labels);
     {
         std::shared_lock lock(mutex_);
@@ -81,6 +101,8 @@ Counter* MetricRegistry::counter(const std::string& name, const Labels& labels) 
 }
 
 Gauge* MetricRegistry::gauge(const std::string& name, const Labels& labels) {
+    if (refuse_sensitive(labels)) return nullptr;
+
     const std::string key = encode_labels(labels);
     {
         std::shared_lock lock(mutex_);
@@ -171,6 +193,18 @@ void declare_all_metrics(MetricRegistry& r) {
     r.declare_gauge("fixmon_next_expected_seq_num", "Next expected inbound MsgSeqNum");
     r.declare_gauge("fixmon_last_outgoing_seq_num", "Highest outgoing MsgSeqNum seen");
 
+    // ---- what the session was configured as ----
+    // Labels here are whitelisted by hand: identity and transport role only.
+    // Hosts, ports, credentials and store paths are deliberately absent - this
+    // series is joined against the others on `session`, so it needs nothing
+    // else to be useful.
+    r.declare_gauge("fixmon_session_info",
+                    "Static session identity, always 1. Labels: begin_string, connection_type, source");
+    r.declare_gauge("fixmon_session_log_sources",
+                    "Number of log adapters attached to this session (0 means nothing is being read)");
+    r.declare_gauge("fixmon_session_config_redacted",
+                    "Credential settings found in the engine config and dropped, by count");
+
     // ---- collector self-monitoring ----
     r.declare_counter("fixmon_lines_read_total", "Log lines read, by adapter");
     r.declare_counter("fixmon_parse_failures_total", "Lines the adapter could not map");
@@ -182,6 +216,8 @@ void declare_all_metrics(MetricRegistry& r) {
     r.declare_gauge("fixmon_metric_series", "Number of exported series");
     r.declare_counter("fixmon_metric_series_rejected_total",
                       "Series refused because the cardinality cap was reached");
+    r.declare_counter("fixmon_metric_series_redacted_total",
+                      "Series refused because a label named a credential - should always be 0");
 }
 
 }  // namespace fixmon

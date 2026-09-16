@@ -1,0 +1,185 @@
+{
+  "title": "FIX Session Discovery",
+  "uid": "fixmon-config",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Sessions discovered",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "description": "How many sessions the collector is tracking. These came out of the engine's own cfg file, not out of fixmon.ini.",
+      "targets": [
+        {
+          "expr": "count(fixmon_session_info)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "background", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Sessions with no log attached",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "description": "A session configured in the engine but with no readable log. Every other metric would look perfectly healthy while this collector reads nothing at all, so it gets its own panel.",
+      "targets": [
+        {
+          "expr": "count(fixmon_session_log_sources == 0) or vector(0)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "background", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Credentials dropped from engine cfg",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "description": "Credential settings found in the engine config and discarded at parse time. Names only were kept; the values never entered the process. Non-zero here is correct and expected.",
+      "targets": [
+        {
+          "expr": "sum(fixmon_session_config_redacted)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "background", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Credential-labelled series refused",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "description": "Must stay at zero forever. Movement means some code path tried to publish a series labelled with a credential and the registry stopped it - a defect, not a capacity problem.",
+      "targets": [
+        {
+          "expr": "sum(fixmon_metric_series_redacted_total) or vector(0)",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": { "colorMode": "background", "textMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Session inventory, as read from the engine config",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 5 },
+      "description": "Every label on this table was chosen by hand. The source file also holds hosts, ports and store paths; none of it is here, and the credentials never made it into the collector at all.",
+      "targets": [
+        {
+          "expr": "fixmon_session_info",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "Value": true },
+            "renameByName": {
+              "session": "Session",
+              "begin_string": "FIX version",
+              "connection_type": "Role",
+              "source": "Config source"
+            }
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log adapters attached per session",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "description": "2 = both the message log and the event log are being tailed. 1 = only one of the pair was resolved. 0 = nothing is being read for this session.",
+      "targets": [
+        {
+          "expr": "fixmon_session_log_sources",
+          "legendFormat": "{{session}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 2,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 10 }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Lines read per second, by adapter",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "description": "Proof that the files resolved from FileLogPath are the files the engine is actually writing. Flat zero on an adapter means the name was resolved but nothing is arriving.",
+      "targets": [
+        {
+          "expr": "rate(fixmon_lines_read_total[1m])",
+          "legendFormat": "{{adapter}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 10 }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
+

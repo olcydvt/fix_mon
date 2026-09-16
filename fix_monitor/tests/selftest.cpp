@@ -1,7 +1,11 @@
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
-#include <fstream>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -12,6 +16,8 @@
 #include "fixmon/fix_parser.hpp"
 #include "fixmon/metrics.hpp"
 #include "fixmon/mpmc_queue.hpp"
+#include "fixmon/quickfix_config.hpp"
+#include "fixmon/redact.hpp"
 #include "fixmon/session_state.hpp"
 
 using namespace fixmon;
@@ -36,6 +42,18 @@ static SessionConfig make_cfg() {
     c.target_comp_id = "VENUEX";
     c.heartbeat_interval = 30;
     return c;
+}
+
+// Temp paths rather than a hardcoded /tmp: this suite has to run on the Windows
+// side of the build too, and a test that cannot run is a test nobody trusts.
+static std::filesystem::path temp_dir(const char* name) {
+    return std::filesystem::temp_directory_path() / name;
+}
+
+static void write_file(const std::filesystem::path& p, const std::string& content) {
+    std::filesystem::create_directories(p.parent_path());
+    std::ofstream f(p);
+    f << content;
 }
 
 static void test_timestamps() {
@@ -306,25 +324,62 @@ static void test_metrics() {
     CHECK(capped.rejected_series() > 0, "rejected series counted rather than silently dropped");
 }
 
+static void test_redaction() {
+    std::cout << "\n[redaction]\n";
+    CHECK(is_sensitive_key("Password"), "Password is a secret");
+    CHECK(is_sensitive_key("password"), "case does not matter");
+    CHECK(is_sensitive_key("SocketKeyStorePassword"),
+          "an SSL wrapper key we have never seen is still caught by fragment");
+    CHECK(is_sensitive_key("private_key_file"), "separators folded away before matching");
+    CHECK(is_sensitive_key("Username"),
+          "login identity treated as a credential, not as a label");
+
+    CHECK(!is_sensitive_key("SenderCompID"), "comp id is not a secret");
+    CHECK(!is_sensitive_key("FileLogPath"), "log path is not a secret");
+    CHECK(!is_sensitive_key("HeartBtInt"), "heartbeat is not a secret");
+    CHECK(!is_sensitive_key("session"), "our own metric labels are not caught");
+    CHECK(!is_sensitive_key("msg_type_name"), "nor the wordier ones");
+    CHECK(!is_sensitive_key("source"), "nor the session_info labels");
+
+    CHECK(redact_if_sensitive("Password", "hunter2") == std::string(kRedacted),
+          "secret value replaced on the way to a human");
+    CHECK(redact_if_sensitive("HeartBtInt", "30") == "30", "ordinary value passes through");
+}
+
+static void test_metric_label_guard() {
+    std::cout << "\n[metric label guard]\n";
+    MetricRegistry reg;
+    declare_all_metrics(reg);
+
+    CHECK(reg.gauge("fixmon_session_info", {{"session", "s"}, {"password", "hunter2"}}) == nullptr,
+          "a series labelled with a credential is refused outright");
+    CHECK(reg.redacted_series() == 1, "the refusal is counted, not silently ignored");
+    CHECK(reg.expose().find("hunter2") == std::string::npos,
+          "the value never reaches the exposition format Prometheus scrapes");
+    CHECK(reg.counter("fixmon_messages_total", {{"session", "s"}, {"Username", "bob"}}) == nullptr,
+          "counters are guarded by the same rule as gauges");
+    CHECK(reg.gauge("fixmon_session_info", {{"session", "s"}, {"begin_string", "FIX.4.4"}}) != nullptr,
+          "ordinary labels still work");
+}
+
 static void test_config() {
     std::cout << "\n[config]\n";
-    const char* path = "/tmp/fixmon_cfg_test.ini";
-    {
-        std::ofstream f(path);
-        f << "[global]\n"
-             "db_path        = ./x.db\n"
-             "metrics_port   = 9200      # inline comment after a number\n"
-             "from_beginning = true      # inline comment after a bool\n"
-             "queue_size     = 1000      ; semicolon comment\n"
-             "snapshot_interval_s = 7\n"
-             "\n[session]\n"
-             "begin_string   = FIX.4.2\n"
-             "sender_comp_id = ME\n"
-             "target_comp_id = YOU\n"
-             "message_log    = /tmp/m.log\n"
-             "heartbeat_interval = 45\n";
-    }
-    AppConfig c = load_config(path);
+    const std::filesystem::path path = temp_dir("fixmon_cfg_test.ini");
+    write_file(path,
+               "[global]\n"
+               "db_path        = ./x.db\n"
+               "metrics_port   = 9200      # inline comment after a number\n"
+               "from_beginning = true      # inline comment after a bool\n"
+               "queue_size     = 1000      ; semicolon comment\n"
+               "snapshot_interval_s = 7\n"
+               "\n[session]\n"
+               "begin_string   = FIX.4.2\n"
+               "sender_comp_id = ME\n"
+               "target_comp_id = YOU\n"
+               "message_log    = m.log\n"
+               "heartbeat_interval = 45\n");
+
+    AppConfig c = load_config(path.string());
     CHECK(c.metrics_port == 9200, "numeric value parses past an inline comment");
     CHECK(c.from_beginning == true,
           "boolean parses past an inline comment (was silently false before)");
@@ -333,20 +388,223 @@ static void test_config() {
     CHECK(c.sessions.size() == 1, "one session block");
     CHECK(c.sessions[0].session_id() == "FIX.4.2:ME->YOU", "session id composed");
     CHECK(c.sessions[0].heartbeat_interval == 45, "heartbeat interval read");
+    CHECK(c.sessions[0].heartbeat_explicit, "heartbeat marked as explicitly set");
     CHECK(c.sessions[0].event_log_path.empty(), "omitted event log stays empty");
-    std::remove(path);
+    std::filesystem::remove(path);
+}
+
+static void test_quickfix_settings() {
+    std::cout << "\n[quickfix settings]\n";
+    std::istringstream cfg(
+        "# the engine's own file, read-only\n"
+        "[DEFAULT]\n"
+        "ConnectionType=initiator\n"
+        "FileLogPath=/var/log/quickfix\n"
+        "FileStorePath=/var/quickfix/store\n"
+        "HeartBtInt=45\n"
+        "SenderCompID=BROKER1\n"
+        "StartTime=00:00:00\n"
+        "EndTime=23:59:59\n"
+        "Password=hunter2\n"
+        "\n"
+        "[SESSION]\n"
+        "BeginString=FIX.4.4\n"
+        "TargetCompID=VENUEX\n"
+        "socketconnecthost=10.0.0.1\n"
+        "\n"
+        "[SESSION]\n"
+        "BeginString=FIX.4.2\n"
+        "TargetCompID=VENUEY\n"
+        "HeartBtInt=60\n"
+        "SSLPrivateKeyPassword=abc\n");
+
+    QuickFixSettings s = parse_quickfix_settings(cfg, "test.cfg");
+    CHECK(s.sessions.size() == 2, "two [SESSION] blocks read");
+    CHECK(s.sessions[0].get("SenderCompID") == "BROKER1", "[DEFAULT] inherited by the session");
+    CHECK(s.sessions[0].get_int("HeartBtInt", 0) == 45, "HeartBtInt inherited from [DEFAULT]");
+    CHECK(s.sessions[1].get_int("HeartBtInt", 0) == 60, "session block overrides the default");
+    CHECK(s.sessions[0].get("SOCKETCONNECTHOST") == "10.0.0.1",
+          "keys compare case-insensitively - a case mismatch silently losing "
+          "FileLogPath would be the worst failure this reader could have");
+
+    CHECK(!s.sessions[0].has("Password"), "password never stored");
+    CHECK(s.defaults.find("Password") == s.defaults.end(), "not kept in the defaults either");
+
+    auto named = [](const std::vector<std::string>& v, const std::string& k) {
+        return std::find(v.begin(), v.end(), k) != v.end();
+    };
+    CHECK(named(s.sessions[0].redacted_keys, "Password"),
+          "credential recorded by name, so an operator sees it was ignored on purpose");
+    CHECK(s.sessions[1].redacted_keys.size() == 2,
+          "session-level credential added to the one inherited from [DEFAULT]");
+}
+
+static void test_quickfix_discovery() {
+    std::cout << "\n[quickfix discovery]\n";
+    namespace fs = std::filesystem;
+    const fs::path root = temp_dir("fixmon_qf_discovery");
+    fs::remove_all(root);
+
+    // QuickFIX C++ naming for one session...
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-VENUEX.messages.current.log", "");
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-VENUEX.event.current.log", "");
+    // ...and the trimmed layout some deployments use, for another.
+    write_file(root / "enginelogs" / "BROKER1-VENUEY.messages.log", "");
+
+    write_file(root / "engine.cfg",
+               "[DEFAULT]\n"
+               "ConnectionType=initiator\n"
+               "SenderCompID=BROKER1\n"
+               "FileLogPath=enginelogs\n"
+               "HeartBtInt=45\n"
+               "StartTime=08:00:00\n"
+               "Password=hunter2\n"
+               "[SESSION]\n"
+               "BeginString=FIX.4.4\n"
+               "TargetCompID=VENUEX\n"
+               "[SESSION]\n"
+               "BeginString=FIX.4.2\n"
+               "TargetCompID=VENUEY\n");
+
+    QuickFixSettings settings = load_quickfix_settings((root / "engine.cfg").string());
+    std::vector<std::string> notes;
+    std::vector<SessionConfig> sessions = sessions_from_quickfix(settings, &notes);
+
+    CHECK(sessions.size() == 2, "both sessions derived from the engine config alone");
+    CHECK(sessions[0].session_id() == "FIX.4.4:BROKER1->VENUEX", "session id built from the cfg");
+    CHECK(sessions[0].heartbeat_interval == 45, "HeartBtInt becomes our heartbeat_interval");
+    CHECK(sessions[0].connection_type == "initiator", "connection type carried over");
+    CHECK(sessions[0].start_time == "08:00:00", "schedule carried over");
+    CHECK(sessions[0].message_log_path.find("FIX.4.4-BROKER1-VENUEX.messages.current.log") !=
+              std::string::npos,
+          "QuickFIX C++ log name resolved under a relative FileLogPath");
+    CHECK(sessions[0].event_log_path.find("FIX.4.4-BROKER1-VENUEX.event.current.log") !=
+              std::string::npos,
+          "matching event log resolved");
+
+    CHECK(sessions[1].message_log_path.find("BROKER1-VENUEY.messages.log") != std::string::npos,
+          "the trimmed naming layout is found too");
+    CHECK(sessions[1].event_log_path.find("BROKER1-VENUEY.event.log") != std::string::npos,
+          "the missing half of the pair is derived from the half that exists, so "
+          "the tailer picks it up the moment the engine creates it");
+
+    CHECK(!sessions[0].redacted_settings.empty(), "credentials reported by name");
+    CHECK(sessions[0].from_quickfix, "session marked as imported");
+    CHECK(sessions[0].origin.find("engine.cfg") != std::string::npos, "origin recorded");
+
+    // Nothing in the derived config may carry the secret anywhere.
+    bool leaked = false;
+    for (const auto& sc : sessions) {
+        for (const auto& key : sc.redacted_settings) {
+            leaked |= key.find("hunter2") != std::string::npos;
+        }
+        leaked |= sc.message_log_path.find("hunter2") != std::string::npos;
+        leaked |= sc.file_log_path.find("hunter2") != std::string::npos;
+    }
+    CHECK(!leaked, "the password value exists nowhere in the imported session config");
+
+    fs::remove_all(root);
+}
+
+static void test_quickfix_merge() {
+    std::cout << "\n[quickfix merge with fixmon.ini]\n";
+    namespace fs = std::filesystem;
+    const fs::path root = temp_dir("fixmon_qf_merge");
+    fs::remove_all(root);
+
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-VENUEX.messages.current.log", "");
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-VENUEX.event.current.log", "");
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-VENUEZ.messages.current.log", "");
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-VENUEZ.event.current.log", "");
+
+    write_file(root / "engine.cfg",
+               "[DEFAULT]\n"
+               "ConnectionType=acceptor\n"
+               "SenderCompID=BROKER1\n"
+               "FileLogPath=enginelogs\n"
+               "HeartBtInt=45\n"
+               "[SESSION]\nBeginString=FIX.4.4\nTargetCompID=VENUEX\n"
+               "[SESSION]\nBeginString=FIX.4.4\nTargetCompID=VENUEZ\n");
+
+    write_file(root / "fixmon.ini",
+               "[global]\n"
+               "quickfix_config = engine.cfg\n"
+               "[session]\n"
+               "begin_string   = FIX.4.4\n"
+               "sender_comp_id = BROKER1\n"
+               "target_comp_id = VENUEX\n"
+               "heartbeat_interval = 10\n");
+
+    AppConfig c = load_config((root / "fixmon.ini").string());
+    CHECK(c.sessions.size() == 2,
+          "the session the operator listed plus the one only the engine knew about");
+
+    auto find_session = [&](const std::string& id) -> const SessionConfig* {
+        for (const auto& s : c.sessions) {
+            if (s.session_id() == id) return &s;
+        }
+        return nullptr;
+    };
+    const SessionConfig* x = find_session("FIX.4.4:BROKER1->VENUEX");
+    const SessionConfig* z = find_session("FIX.4.4:BROKER1->VENUEZ");
+
+    CHECK(x != nullptr && z != nullptr, "both sessions present after the merge");
+    CHECK(x && x->heartbeat_interval == 10,
+          "an explicit heartbeat wins over HeartBtInt from the engine");
+    CHECK(z && z->heartbeat_interval == 45,
+          "a session with nothing explicit takes HeartBtInt from the engine");
+    CHECK(x && !x->message_log_path.empty(),
+          "log path the operator never wrote down, filled in from the engine cfg");
+    CHECK(x && x->connection_type == "acceptor", "connection type filled in as well");
+    CHECK(!c.notes.empty(), "the import says out loud what it did");
+
+    fs::remove_all(root);
+}
+
+static void test_quickfix_wildcard() {
+    std::cout << "\n[quickfix wildcard acceptor]\n";
+    namespace fs = std::filesystem;
+    const fs::path root = temp_dir("fixmon_qf_wildcard");
+    fs::remove_all(root);
+
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-CLIENTA.messages.current.log", "");
+    write_file(root / "enginelogs" / "FIX.4.4-BROKER1-CLIENTB.messages.current.log", "");
+
+    write_file(root / "engine.cfg",
+               "[DEFAULT]\n"
+               "ConnectionType=acceptor\n"
+               "SenderCompID=BROKER1\n"
+               "FileLogPath=enginelogs\n"
+               "[SESSION]\n"
+               "BeginString=FIX.4.4\n"
+               "TargetCompID=*\n");
+
+    QuickFixSettings settings = load_quickfix_settings((root / "engine.cfg").string());
+    std::vector<std::string> notes;
+    std::vector<SessionConfig> sessions = sessions_from_quickfix(settings, &notes);
+
+    CHECK(sessions.size() == 2,
+          "a wildcard acceptor expands to the counterparties the engine actually logged");
+    bool a = false, b = false;
+    for (const auto& s : sessions) {
+        a |= s.session_id() == "FIX.4.4:BROKER1->CLIENTA";
+        b |= s.session_id() == "FIX.4.4:BROKER1->CLIENTB";
+    }
+    CHECK(a && b, "both discovered comp ids became real sessions");
+
+    fs::remove_all(root);
 }
 
 static void test_store() {
     std::cout << "\n[event store]\n";
-    const char* path = "/tmp/fixmon_selftest.db";
-    std::remove(path);
-    std::remove("/tmp/fixmon_selftest.db-wal");
-    std::remove("/tmp/fixmon_selftest.db-shm");
+    const std::filesystem::path path = temp_dir("fixmon_selftest.db");
+    std::filesystem::remove(path);
+    std::filesystem::remove(path.string() + "-wal");
+    std::filesystem::remove(path.string() + "-shm");
 
     EventStore store;
     std::string err;
-    CHECK(store.open(path, err), "store opens");
+    CHECK(store.open(path.string(), err), "store opens");
 
     for (int i = 0; i < 250; ++i) {
         Event e;
@@ -383,7 +641,7 @@ static void test_store() {
     CHECK(store.write_errors() == 0, "snapshot written");
 
     store.close();
-    std::cout << "  (db left at " << path << " for inspection)\n";
+    std::cout << "  (db left at " << path.string() << " for inspection)\n";
 }
 
 int main() {
@@ -397,7 +655,13 @@ int main() {
     test_staleness();
     test_queue();
     test_metrics();
+    test_redaction();
+    test_metric_label_guard();
     test_config();
+    test_quickfix_settings();
+    test_quickfix_discovery();
+    test_quickfix_merge();
+    test_quickfix_wildcard();
     test_store();
 
     std::cout << "\n";

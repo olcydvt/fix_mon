@@ -70,3 +70,46 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "fixmon collector is not being scraped"
+
+  - name: fixmon-config
+    rules:
+      # A session the engine config describes but whose logs were never
+      # resolved. This is the quiet failure: session_up, reject rates and
+      # everything else stay flat and green while the collector reads nothing.
+      - alert: FixmonSessionNotTailed
+        expr: fixmon_session_log_sources == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "No log file resolved for {{ $labels.session }}"
+          description: >-
+            The session is configured but no message or event log was found under
+            its FileLogPath, so nothing is being read for it. Check that file
+            logging is enabled in the engine and that FileLogPath is visible to
+            the collector.
+
+      # Only one adapter attached where two were expected. Half the picture:
+      # message-level detail without disconnect reasons, or the other way round.
+      - alert: FixmonSessionHalfTailed
+        expr: fixmon_session_log_sources == 1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Only one of the two logs resolved for {{ $labels.session }}"
+          description: >-
+            Either the message log or the event log is missing. Correlation
+            between the two streams is what makes a disconnect explainable, so
+            this session will show the symptom without the cause.
+
+      # Must never fire. If it does, a code path built a metric label out of a
+      # credential name and the registry refused the series.
+      - alert: FixmonCredentialLabelRefused
+        expr: increase(fixmon_metric_series_redacted_total[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "A metric series labelled with a credential was refused"
+          description: >-
+            The registry blocked a series whose label name matched the
+            credential rule, so nothing leaked. Treat this as a defect in
+            whatever published it, not as a tuning problem.
+

@@ -1,0 +1,35 @@
+# Build trees. CLion writes cmake-build-*, the scripted builds use build/.
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.o
+*.a
+
+# Run artefacts. demo.sh deletes and recreates all of these on every run
+# (see the rm -rf at the top of the script), so tracking them only produces
+# a permanently dirty tree and binary diffs nobody can review.
+*.db
+*.db-wal
+*.db-shm
+demo-store/
+logs/
+.demo.ini
+.demo-engine.cfg
+.demo-metrics.txt
+.demo-sessions.json
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+

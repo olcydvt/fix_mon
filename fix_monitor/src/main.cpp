@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "fixmon/http_server.hpp"
 #include "fixmon/metrics.hpp"
 #include "fixmon/mpmc_queue.hpp"
+#include "fixmon/redact.hpp"
 #include "fixmon/session_state.hpp"
 
 using namespace fixmon;
@@ -185,16 +187,102 @@ void publish_state(MetricRegistry& reg, const SessionRegistry& sessions, int64_t
     }
 }
 
+// Static description of a session, published once at startup.
+//
+// Every label here is chosen by hand. The engine config these sessions come
+// from also carries hosts, ports and store paths, and the outright secret
+// settings never made it into SessionConfig at all. What is left is enough to
+// group dashboards by protocol version and by initiator/acceptor role.
+void publish_session_info(MetricRegistry& reg, const SessionConfig& sc, int adapters) {
+    const std::string sid = sc.session_id();
+
+    set(reg, "fixmon_session_info",
+        {{"session", sid},
+         {"begin_string", sc.begin_string},
+         {"connection_type", sc.connection_type.empty() ? "unknown" : sc.connection_type},
+         {"source", sc.from_quickfix ? "quickfix_config" : "fixmon_ini"}},
+        1.0);
+
+    Labels l{{"session", sid}};
+    // Zero here means the session is configured but nothing is being tailed -
+    // the one failure mode where every other metric would look perfectly fine.
+    set(reg, "fixmon_session_log_sources", l, adapters);
+    set(reg, "fixmon_session_config_redacted", l,
+        static_cast<double>(sc.redacted_settings.size()));
+}
+
+void print_session(const SessionConfig& sc, int adapters) {
+    std::cout << "session: " << sc.session_id() << "  hb=" << sc.heartbeat_interval << "s";
+    if (!sc.connection_type.empty()) std::cout << "  " << sc.connection_type;
+    if (sc.from_quickfix) std::cout << "  <- " << sc.origin;
+    std::cout << "\n";
+
+    if (!sc.message_log_path.empty()) std::cout << "    messages: " << sc.message_log_path << "\n";
+    if (!sc.event_log_path.empty())   std::cout << "    events  : " << sc.event_log_path << "\n";
+    if (!sc.start_time.empty() || !sc.end_time.empty()) {
+        std::cout << "    schedule: " << sc.start_time << " - " << sc.end_time << "\n";
+    }
+    if (adapters == 0) {
+        std::cout << "    WARNING: no log files resolved, this session will stay silent\n";
+    }
+    if (!sc.redacted_settings.empty()) {
+        // Names only. Saying they were seen and dropped is the point; silence
+        // would leave an operator wondering whether we read them at all.
+        std::cout << "    credentials ignored:";
+        for (const auto& key : sc.redacted_settings) {
+            std::cout << " " << key << "=" << kRedacted;
+        }
+        std::cout << "\n";
+    }
+}
+
+void print_usage() {
+    std::cerr << "usage: fixmon <config.ini> [--quickfix <session.cfg>]...\n"
+                 "       fixmon --quickfix <session.cfg>...   (collector defaults)\n"
+                 "       fixmon --print-config <...>          (resolve and exit)\n"
+                 "       fixmon --version\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc >= 2 && (std::string(argv[1]) == "--version" || std::string(argv[1]) == "-v")) {
-        std::cout << "fixmon " << FIXMON_VERSION << "\n";
-        return 0;
+    std::string              ini_path;
+    std::vector<std::string> quickfix_paths;
+    bool                     print_only = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--version" || arg == "-v") {
+            std::cout << "fixmon " << FIXMON_VERSION << "\n";
+            return 0;
+        }
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--quickfix" || arg == "-q") {
+            if (++i >= argc) {
+                std::cerr << "--quickfix needs a path to a QuickFIX cfg file\n";
+                return 2;
+            }
+            quickfix_paths.emplace_back(argv[i]);
+        } else if (arg == "--print-config") {
+            print_only = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "unknown option: " << arg << "\n";
+            print_usage();
+            return 2;
+        } else if (ini_path.empty()) {
+            ini_path = arg;
+        } else {
+            std::cerr << "unexpected argument: " << arg << "\n";
+            print_usage();
+            return 2;
+        }
     }
-    if (argc < 2) {
-        std::cerr << "usage: fixmon <config.ini>\n"
-                     "       fixmon --version\n";
+
+    if (ini_path.empty() && quickfix_paths.empty()) {
+        print_usage();
         return 2;
     }
 
@@ -207,16 +295,35 @@ int main(int argc, char** argv) {
 
     AppConfig cfg;
     try {
-        cfg = load_config(argv[1]);
+        cfg = ini_path.empty() ? config_from_quickfix(quickfix_paths)
+                               : load_config(ini_path, quickfix_paths);
     } catch (const std::exception& e) {
         std::cerr << "config error: " << e.what() << "\n";
         return 2;
     }
 
+    // Discovery is never silent: every import decision, and every log file we
+    // could not find, gets said out loud before anything starts.
+    for (const auto& note : cfg.notes) std::cout << "config: " << note << "\n";
+
     MetricRegistry registry;
     declare_all_metrics(registry);
 
     SessionRegistry sessions(cfg.stale_after_multiple);
+
+    // --print-config resolves everything, shows what would be watched, exits.
+    // Lets an engine cfg import be checked without touching the database or
+    // binding a port.
+    if (print_only) {
+        for (const auto& sc : cfg.sessions) {
+            int attached = static_cast<int>(!sc.message_log_path.empty()) +
+                           static_cast<int>(!sc.event_log_path.empty());
+            print_session(sc, attached);
+        }
+        std::cout << "event store: " << cfg.db_path << " (not opened)\n"
+                  << "metrics port: " << cfg.metrics_port << " (not bound)\n";
+        return 0;
+    }
 
     EventStore  store;
     std::string err;
@@ -239,16 +346,21 @@ int main(int argc, char** argv) {
     std::vector<std::unique_ptr<ISourceAdapter>> adapters;
     for (const auto& sc : cfg.sessions) {
         sessions.register_session(sc.session_id(), sc.heartbeat_interval);
+
+        int attached = 0;
         if (!sc.message_log_path.empty()) {
             adapters.push_back(std::make_unique<MessageLogAdapter>(
                 sc, cfg.from_beginning, cfg.poll_interval_ms));
+            ++attached;
         }
         if (!sc.event_log_path.empty()) {
             adapters.push_back(std::make_unique<EventLogAdapter>(
                 sc, cfg.from_beginning, cfg.poll_interval_ms));
+            ++attached;
         }
-        std::cout << "session: " << sc.session_id()
-                  << "  hb=" << sc.heartbeat_interval << "s\n";
+
+        print_session(sc, attached);
+        publish_session_info(registry, sc, attached);
     }
     for (auto& a : adapters) a->start(sink);
 
@@ -303,6 +415,11 @@ int main(int argc, char** argv) {
             mirror(registry, "fixmon_store_write_errors_total", {}, store.write_errors());
             mirror(registry, "fixmon_metric_series_rejected_total", {},
                    registry.rejected_series());
+            // Should stay at zero forever. Movement means some code path tried
+            // to label a series with a credential name and the registry stopped
+            // it - a defect, not a capacity problem.
+            mirror(registry, "fixmon_metric_series_redacted_total", {},
+                   registry.redacted_series());
 
             for (auto& a : adapters) {
                 Labels al{{"adapter", a->name()}};

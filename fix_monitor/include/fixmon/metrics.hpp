@@ -7,6 +7,13 @@
 // event store, not in Prometheus. A hard series cap is enforced so a
 // misconfigured label can never take the scrape target down.
 //
+// Second constraint, added once sessions started being imported from the
+// engine's own config: a label whose name looks like a credential is refused
+// outright. The config reader already drops those values at parse time, so this
+// is the backstop for code that has not been written yet. A scrape endpoint is
+// usually unauthenticated and its contents end up in a time series database and
+// on dashboards, which is the last place a password should land.
+//
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -49,7 +56,8 @@ public:
     void declare_counter(const std::string& name, const std::string& help);
     void declare_gauge(const std::string& name, const std::string& help);
 
-    // Returns nullptr if the series cap is hit; callers must tolerate that.
+    // Returns nullptr if the series cap is hit or a label name looks like a
+    // credential; callers must tolerate that.
     Counter* counter(const std::string& name, const Labels& labels);
     Gauge*   gauge(const std::string& name, const Labels& labels);
 
@@ -57,6 +65,11 @@ public:
 
     uint64_t series_count()   const;
     uint64_t rejected_series() const { return rejected_.load(); }
+
+    // Series refused because a label named a secret. Non-zero means some code
+    // path tried to publish one, which is a bug worth alerting on rather than a
+    // condition to tolerate quietly.
+    uint64_t redacted_series() const { return redacted_.load(); }
 
 private:
     struct Family {
@@ -68,10 +81,15 @@ private:
 
     static std::string encode_labels(const Labels&);
 
+    // True when any label name is sensitive. Counts the refusal as a side
+    // effect, so it shows up instead of disappearing.
+    bool refuse_sensitive(const Labels&) const;
+
     mutable std::shared_mutex      mutex_;
     std::map<std::string, Family>  families_;
     size_t                         max_series_;
     std::atomic<uint64_t>          rejected_{0};
+    mutable std::atomic<uint64_t>  redacted_{0};
 };
 
 // Declares every family this collector exports.

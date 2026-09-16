@@ -1,0 +1,42 @@
+# The build context is the repo root, so everything not listed in the
+# Dockerfile's COPY lines would still be shipped to the daemon. Over a /mnt/c
+# 9p mount that is the difference between a fast build and a two-minute stall
+# before compilation even starts.
+
+# Build trees
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+
+# Local run artefacts
+*.db
+*.db-wal
+*.db-shm
+logs/
+demo-store/
+.demo.ini
+.demo-engine.cfg
+.demo-metrics.txt
+.demo-sessions.json
+
+# Editor and VCS
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+
+# Not needed inside the image: the Dockerfile copies only CMakeLists.txt,
+# cmake/, include/, src/ and tests/.
+deploy/
+grafana/
+tools/
+*.md
+demo.sh
+fixmon.ini
+quickfix.cfg
+alerts.yml
+fixmon-sessions.json
+

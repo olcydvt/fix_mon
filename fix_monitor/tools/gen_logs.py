@@ -48,11 +48,22 @@ def main():
     ap.add_argument("--dir", default="./logs")
     ap.add_argument("--duration", type=int, default=35)
     ap.add_argument("--rate", type=float, default=8.0, help="messages per second")
+    ap.add_argument("--naming", choices=["short", "quickfix"], default="short",
+                    help="short:    BROKER1-VENUEX.messages.log\n"
+                         "quickfix: FIX.4.4-BROKER1-VENUEX.messages.current.log, "
+                         "which is what the C++ engine actually writes")
     args = ap.parse_args()
 
-    base = os.path.join(args.dir, f"{SENDER}-{TARGET}")
-    msgs = Writer(base + ".messages.log")
-    evts = Writer(base + ".event.log")
+    # The collector resolves either layout from FileLogPath, so the generator
+    # can produce either. 'quickfix' is the honest one to demo against.
+    if args.naming == "quickfix":
+        base = os.path.join(args.dir, f"{BEGIN}-{SENDER}-{TARGET}")
+        msgs = Writer(base + ".messages.current.log")
+        evts = Writer(base + ".event.current.log")
+    else:
+        base = os.path.join(args.dir, f"{SENDER}-{TARGET}")
+        msgs = Writer(base + ".messages.log")
+        evts = Writer(base + ".event.log")
 
     out_seq = 1
     in_seq = 1
@@ -153,6 +164,20 @@ def main():
             injected.add("unknown")
             evts.line("Vendor-specific condition XYZ-4471 raised on channel 2")
             print("[gen] injected unknown wording (should land as 'unparsed')")
+
+        # Recover the session before settling into steady state. Without this
+        # the run ends on the logon reject, so the session stays Disconnected
+        # for the rest of the duration while orders keep flowing - a picture no
+        # real engine produces, and one that makes every dashboard read wrong.
+        if elapsed > 29 and "recovered" not in injected:
+            injected.add("recovered")
+            evts.line("Attempting to reconnect in 5 seconds")
+            evts.line("Connecting to venue-gw.example.com:9823")
+            evts.line("Initiated logon request")
+            msgs.line(fix(out_seq, "A", True, **{"98": 0, "108": 30})); out_seq += 1
+            msgs.line(fix(in_seq, "A", False, **{"98": 0, "108": 30})); in_seq += 1
+            evts.line("Received logon response")
+            print("[gen] session recovered, steady state from here")
 
         # heartbeats
         if random.random() < 0.3:

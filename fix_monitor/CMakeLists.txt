@@ -20,7 +20,9 @@ find_package(Threads REQUIRED)
 
 add_library(fixmon_core STATIC
   src/event.cpp
+  src/redact.cpp
   src/config.cpp
+  src/quickfix_config.cpp
   src/fix_parser.cpp
   src/tail_reader.cpp
   src/message_log_adapter.cpp
