@@ -41,7 +41,10 @@ public:
 // ---------------------------------------------------------------------------
 class MessageLogAdapter : public ISourceAdapter {
 public:
-    MessageLogAdapter(SessionConfig cfg, bool from_beginning, int poll_ms);
+    // mask_bodies drops client identity and commercial detail out of the stored
+    // body. Credential tags are masked either way; that is not a policy choice.
+    MessageLogAdapter(SessionConfig cfg, bool from_beginning, int poll_ms,
+                      bool mask_bodies = true);
     ~MessageLogAdapter() override;
 
     void        start(EventSink sink) override;
@@ -61,6 +64,7 @@ private:
     std::string           session_id_;
     bool                  from_beginning_;
     int                   poll_ms_;
+    bool                  mask_bodies_ = true;
     EventSink             sink_;
     std::thread           thread_;
     std::atomic<bool>     running_{false};

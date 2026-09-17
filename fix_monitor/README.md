@@ -239,8 +239,24 @@ not be found is reported on `config:` lines before anything starts.
 Endpoints:
 
 - `GET /metrics` — Prometheus text exposition
-- `GET /sessions` — session state as JSON (for debugging)
+- `GET /sessions` — per-session counters **and** the configuration needed to read
+  them, as JSON
 - `GET /healthz`
+
+`/sessions` carries both halves on purpose. The counters say `seq_gaps: 3`; the
+`config` block says whether three gaps are routine or an incident:
+
+```json
+{"session_id":"FIX.4.4:BROKER1->VENUEX","state":"logged_on","seq_gaps":3,
+ "config":{"connection_type":"initiator","heartbeat_interval":30,
+           "source":"quickfix_config","reset_on_logon":"no","reset_on_logout":"no",
+           "reset_on_disconnect":"no","persist_messages":"yes",
+           "seq_reset_policy":"persistent","resend_capability":"full"}}
+```
+
+The raw four are included next to the derived pair so a reader can check the
+derivation instead of trusting it. `config` is absent for a session that is
+being reported on but is no longer in the configuration.
 
 ### Trying it with fake logs
 
@@ -401,16 +417,31 @@ finding.
 
 | Metric | Label / meaning |
 |---|---|
-| `fixmon_session_info` | session, begin_string, connection_type, source — always 1, for joins |
+| `fixmon_session_info` | session, begin_string, connection_type, source, seq_reset_policy, resend_capability — always 1, for joins |
 | `fixmon_session_log_sources` | session — attached adapter count; 0 = nothing is being read |
 | `fixmon_session_config_redacted` | session — **how many** credentials were found in the cfg and dropped |
 
-The labels on `fixmon_session_info` were chosen by hand: identity and transport
-role. Host, port, store path and credentials are deliberately absent; this
-series is joined to the others on `session` and does not need more.
+The labels on `fixmon_session_info` were chosen by hand: identity, transport
+role, and how the session handles sequence numbers. Host, port, store path and
+credentials are deliberately absent; this series is joined to the others on
+`session` and does not need more.
+
+`seq_reset_policy` is what makes a sequence gap readable. It is derived from
+`ResetOnLogon` / `ResetOnLogout` / `ResetOnDisconnect` in the engine config:
+
+| Value | A gap means |
+|---|---|
+| `reset_each_logon` | nothing — the counterparty restarts at 1 every logon, as configured |
+| `reset_each_logout` | nothing if it followed a disconnect; otherwise investigate |
+| `persistent` | messages were lost, or a store was wiped |
+| `unknown` | we never saw an engine config — do not conclude anything |
+
+`resend_capability` is `gap_fill_only` when `PersistMessages=N`. That engine
+cannot replay, so a ResendRequest will be answered with a SequenceReset and
+"ask them to resend" is advice that cannot work.
 
 ```
-fixmon_session_info{session="FIX.4.4:BROKER1->VENUEX",begin_string="FIX.4.4",connection_type="initiator",source="quickfix_config"} 1
+fixmon_session_info{session="FIX.4.4:BROKER1->VENUEX",begin_string="FIX.4.4",connection_type="initiator",source="quickfix_config",seq_reset_policy="persistent",resend_capability="full"} 1
 fixmon_session_log_sources{session="FIX.4.4:BROKER1->VENUEX"} 2
 fixmon_session_config_redacted{session="FIX.4.4:BROKER1->VENUEX"} 2
 ```

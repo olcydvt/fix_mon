@@ -269,4 +269,45 @@ void EventStore::write_snapshot(const SessionSnapshot& s, int64_t ts_ns) {
     if (sqlite3_step(insert_sn_) != SQLITE_DONE) ++write_errors_;
 }
 
+size_t EventStore::purge_before(int64_t cutoff_ns, std::string& err) {
+    if (!db_) return 0;
+
+    // Staged rows have no timestamp filter applied to them yet and could be
+    // older than the cutoff. Committing first keeps "what is in the table"
+    // and "what survived the purge" the same answer.
+    flush();
+
+    size_t removed = 0;
+    auto del = [&](const char* sql) {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+            err = sqlite3_errmsg(db_);
+            return;
+        }
+        sqlite3_bind_int64(st, 1, cutoff_ns);
+        if (sqlite3_step(st) == SQLITE_DONE) {
+            removed += static_cast<size_t>(sqlite3_changes(db_));
+        } else {
+            err = sqlite3_errmsg(db_);
+        }
+        sqlite3_finalize(st);
+    };
+
+    // One transaction: a purge interrupted halfway would otherwise leave
+    // snapshots pointing at events that are already gone.
+    std::string ignored;
+    exec("BEGIN IMMEDIATE", ignored);
+    del("DELETE FROM events WHERE ts_ns < ?");
+    del("DELETE FROM session_snapshots WHERE ts_ns < ?");
+    exec("COMMIT", ignored);
+
+    // No VACUUM. It rewrites the whole file while holding a write lock, which
+    // on a busy store is a stall the collector cannot afford. The freed pages
+    // are reused by the next inserts; the file stops growing, which is the
+    // part that actually matters.
+
+    rows_purged_ += removed;
+    return removed;
+}
+
 }  // namespace fixmon

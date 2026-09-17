@@ -45,8 +45,17 @@ public:
     // "what did this session look like at 14:32" without replaying events.
     void write_snapshot(const SessionSnapshot& snap, int64_t ts_ns);
 
+    // Deletes everything older than cutoff_ns from both tables. Both are
+    // indexed on ts_ns, so this is a range scan rather than a table walk.
+    //
+    // Retention is part of the same rule as masking: the safest record of a
+    // counterparty's traffic is the one that no longer exists. Returns rows
+    // removed; err is set only when sqlite itself refused.
+    size_t purge_before(int64_t cutoff_ns, std::string& err);
+
     uint64_t rows_written() const { return rows_written_; }
     uint64_t write_errors() const { return write_errors_; }
+    uint64_t rows_purged() const { return rows_purged_; }
 
 private:
     bool exec(const char* sql, std::string& err);
@@ -59,6 +68,7 @@ private:
     std::vector<Event> staged_;
     uint64_t           rows_written_ = 0;
     uint64_t           write_errors_ = 0;
+    uint64_t           rows_purged_  = 0;
 };
 
 }  // namespace fixmon

@@ -9,7 +9,16 @@
 // and take the session list from there.
 //
 // What we take:  BeginString, comp ids, qualifier, HeartBtInt, ConnectionType,
-//                schedule, FileLogPath (to find the logs), FileStorePath.
+//                schedule, FileLogPath (to find the logs), FileStorePath, and
+//                ResetOnLogon / ResetOnLogout / ResetOnDisconnect /
+//                PersistMessages.
+//
+//                That last group is not decoration. It is what separates "the
+//                counterparty restarted and began at 1, as configured" from
+//                "messages went missing", and the two look identical in the
+//                logs. A monitor without it can describe a sequence gap but
+//                cannot say whether anything is wrong.
+//
 // What we drop:  every credential, at parse time, before the value is stored.
 //                Only the key name survives, so an operator can see it was
 //                ignored on purpose. See redact.hpp.
@@ -44,6 +53,11 @@ struct QuickFixSessionBlock {
     bool        has(const std::string& key) const;
     std::string get(const std::string& key, const std::string& fallback = {}) const;
     int         get_int(const std::string& key, int fallback) const;
+
+    // Y/N, via the same parser the ini reader uses, so one dialect cannot mean
+    // two things depending on which file it was written in. Unknown when the
+    // key is absent - which is deliberately not the same answer as No.
+    TriState    get_bool(const std::string& key) const;
 };
 
 struct QuickFixSettings {

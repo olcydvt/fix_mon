@@ -193,13 +193,23 @@ void declare_all_metrics(MetricRegistry& r) {
     r.declare_gauge("fixmon_next_expected_seq_num", "Next expected inbound MsgSeqNum");
     r.declare_gauge("fixmon_last_outgoing_seq_num", "Highest outgoing MsgSeqNum seen");
 
+    // Signed: negative means the engine stamped a line in our future. Every
+    // other time-based number here - staleness, message age, the latency of the
+    // whole pipeline - is measured against the engine's own timestamps, so if
+    // this one drifts they are all wrong together and none of them says so.
+    r.declare_gauge("fixmon_engine_clock_skew_seconds",
+                    "Ingest time minus the engine's timestamp on the last line of this session");
+
     // ---- what the session was configured as ----
     // Labels here are whitelisted by hand: identity and transport role only.
     // Hosts, ports, credentials and store paths are deliberately absent - this
     // series is joined against the others on `session`, so it needs nothing
     // else to be useful.
     r.declare_gauge("fixmon_session_info",
-                    "Static session identity, always 1. Labels: begin_string, connection_type, source");
+                    "Static session identity, always 1. Labels: begin_string, connection_type, "
+                    "source, seq_reset_policy, resend_capability. Join against the sequence-gap "
+                    "counters: a gap under reset_each_logon is routine, the same gap under "
+                    "persistent is an incident");
     r.declare_gauge("fixmon_session_log_sources",
                     "Number of log adapters attached to this session (0 means nothing is being read)");
     r.declare_gauge("fixmon_session_config_redacted",
@@ -210,8 +220,13 @@ void declare_all_metrics(MetricRegistry& r) {
     r.declare_counter("fixmon_parse_failures_total", "Lines the adapter could not map");
     r.declare_counter("fixmon_events_dropped_total",
                       "Events dropped because the internal queue was full");
+    r.declare_counter("fixmon_queue_full_waits_total",
+                      "Times a producer had to wait because the internal queue was full");
     r.declare_counter("fixmon_store_rows_written_total", "Rows committed to the event store");
     r.declare_counter("fixmon_store_write_errors_total", "Event store write errors");
+    r.declare_counter("fixmon_store_rows_purged_total",
+                      "Rows removed by retention. Flat at zero with retention on means "
+                      "nothing has aged out yet, or the purge is not running");
     r.declare_gauge("fixmon_queue_depth", "Approximate internal queue depth");
     r.declare_gauge("fixmon_metric_series", "Number of exported series");
     r.declare_counter("fixmon_metric_series_rejected_total",

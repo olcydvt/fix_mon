@@ -1,9 +1,26 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fixmon {
+
+// A QuickFIX Y/N setting, or the fact that we never saw one.
+//
+// Three states rather than a bool because "the operator set it to N" and "we
+// have no idea" lead to opposite advice, and a monitor that cannot tell them
+// apart will give the wrong one with the same confidence as the right one. A
+// session described only in fixmon.ini has no engine config behind it, so
+// Unknown is the honest answer for all of these.
+enum class TriState { Unknown, No, Yes };
+
+const char* to_string(TriState v);
+
+// Y/N as QuickFIX writes it. true/false and 1/0 are also accepted because
+// deployments use them. Anything else, including an empty value, is Unknown -
+// guessing here would be indistinguishable from knowing.
+TriState parse_tristate(std::string_view v);
 
 struct SessionConfig {
     std::string begin_string;      // FIX.4.2 / FIX.4.4 / FIXT.1.1
@@ -45,6 +62,36 @@ struct SessionConfig {
     // purpose rather than missed.
     std::vector<std::string> redacted_settings;
 
+    // ---- how this session handles sequence numbers ----
+    //
+    // These four decide what a sequence mismatch means, and therefore what to
+    // do about it. Without them any diagnosis is a guess dressed up as an
+    // answer: "expected 5, received 1" is correct behaviour under
+    // ResetOnLogon=Y and a lost-message incident under ResetOnLogon=N, and the
+    // observable evidence is identical in both cases.
+    TriState reset_on_logon      = TriState::Unknown;
+    TriState reset_on_logout     = TriState::Unknown;
+    TriState reset_on_disconnect = TriState::Unknown;
+    TriState persist_messages    = TriState::Unknown;
+
+    // What the reset flags add up to. Derived in one place so the console, the
+    // JSON endpoint and the metric labels cannot drift into disagreeing.
+    //
+    //   unknown            no engine config behind this session
+    //   reset_each_logon   ResetOnLogon=Y - starting from 1 again is normal
+    //   reset_each_logout  ResetOnLogout=Y or ResetOnDisconnect=Y - numbers
+    //                      survive a logon but not a disconnect
+    //   persistent         nothing resets; numbers carry across reconnects and
+    //                      a gap is a real gap
+    const char* seq_reset_policy() const;
+
+    //   unknown        PersistMessages was not in the config we read
+    //   full           outgoing messages are kept and can genuinely be replayed
+    //   gap_fill_only  PersistMessages=N - a ResendRequest can only ever be
+    //                  answered with a SequenceReset, never the real messages,
+    //                  so "ask them to resend" is advice that cannot work
+    const char* resend_capability() const;
+
     // BeginString:Sender->Target, plus :Qualifier when the engine uses one.
     std::string session_id() const;
 };
@@ -59,6 +106,18 @@ struct AppConfig {
     bool        from_beginning = false;   // replay existing log content
     int         stale_after_multiple = 2; // heartbeat*N with no traffic -> stale
     int         snapshot_interval_s  = 30; // how often session state is persisted
+    int         queue_full_wait_ms = 250;
+
+    // Store client identity and commercial detail as <masked> instead of the
+    // value. On by default: a monitor answers "is the link healthy", and that
+    // question never needs to know the price. Credential tags are masked
+    // regardless of this setting.
+    bool mask_message_bodies = true;
+
+    // Days of history kept in the event store. 0 disables the purge, which is
+    // a deliberate choice an operator has to make rather than the default:
+    // an unbounded log of counterparty traffic is a liability that grows.
+    int retention_days = 0;
 
     // QuickFIX engine config files to import sessions from. Read-only; we take
     // identity, heartbeat and log paths out of them and ignore everything that

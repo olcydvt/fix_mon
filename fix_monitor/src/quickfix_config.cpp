@@ -238,6 +238,12 @@ int QuickFixSessionBlock::get_int(const std::string& key, int fallback) const {
     }
 }
 
+TriState QuickFixSessionBlock::get_bool(const std::string& key) const {
+    auto it = values.find(key);
+    if (it == values.end()) return TriState::Unknown;
+    return parse_tristate(it->second);
+}
+
 QuickFixSettings parse_quickfix_settings(std::istream& in, const std::string& origin) {
     QuickFixSettings out;
     out.path = origin;
@@ -421,6 +427,15 @@ std::vector<SessionConfig> sessions_from_quickfix(const QuickFixSettings& settin
         sc.end_time           = block.get("EndTime");
         sc.file_store_path    = block.get("FileStorePath");
         sc.file_log_path      = block.get("FileLogPath");
+
+        // The settings that decide what a sequence mismatch means. Read rather
+        // than assumed: the engine is the only thing that knows, and a default
+        // invented here would be handed on as fact.
+        sc.reset_on_logon      = block.get_bool("ResetOnLogon");
+        sc.reset_on_logout     = block.get_bool("ResetOnLogout");
+        sc.reset_on_disconnect = block.get_bool("ResetOnDisconnect");
+        sc.persist_messages    = block.get_bool("PersistMessages");
+
         sc.origin             = settings.path;
         sc.from_quickfix      = true;
         sc.redacted_settings  = block.redacted_keys;

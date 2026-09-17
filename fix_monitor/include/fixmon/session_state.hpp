@@ -57,6 +57,14 @@ struct SessionSnapshot {
     std::string last_disconnect_reason;
     std::string last_reject_text;
 
+    // Ingest time minus the engine's own timestamp on the last message.
+    // Two different clocks, so it is never exactly zero; what matters is that
+    // it stays flat. A drifting value means the engine host and this host
+    // disagree about when things happened, and every latency number derived
+    // from the logs - including our own staleness check - is wrong by that
+    // much. Sustained growth instead means we have fallen behind the tail.
+    int64_t clock_skew_ns = 0;
+
     int heartbeat_interval = 30;
 };
 

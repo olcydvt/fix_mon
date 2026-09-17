@@ -1,5 +1,6 @@
 #include "fixmon/adapters.hpp"
 #include "fixmon/fix_parser.hpp"
+#include "fixmon/redact.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -29,10 +30,12 @@ int32_t to_i32(std::string_view sv) {
 
 }  // namespace
 
-MessageLogAdapter::MessageLogAdapter(SessionConfig cfg, bool from_beginning, int poll_ms)
+MessageLogAdapter::MessageLogAdapter(SessionConfig cfg, bool from_beginning, int poll_ms,
+                                     bool mask_bodies)
     : cfg_(std::move(cfg)),
       from_beginning_(from_beginning),
-      poll_ms_(poll_ms) {
+      poll_ms_(poll_ms),
+      mask_bodies_(mask_bodies) {
     session_id_ = cfg_.session_id();
 }
 
@@ -86,13 +89,23 @@ bool MessageLogAdapter::parse_line(const std::string& line, Event& out) {
         out.ord_status.assign(it->second.data(), it->second.size());
     }
     if (auto it = tags.find(58); it != tags.end()) {
-        out.text.assign(it->second.data(), it->second.size());
+        // Tag 58 is free text written by the counterparty. It is the one place in a
+        // FIX message where an operator can type anything at all, so it gets the
+        // same token scrub as an engine log line rather than being trusted.
+        out.text = redact_free_text(it->second);
     }
     // OrdRejReason / CxlRejReason when no session reject reason present.
     if (out.reject_reason < 0) {
         if (auto it = tags.find(103); it != tags.end()) out.reject_reason = to_i32(it->second);
         else if (auto it2 = tags.find(102); it2 != tags.end()) out.reject_reason = to_i32(it2->second);
     }
+
+    // Mask last, after every field we care about has been lifted out of the body.
+    // The derived columns above are structure (sequence numbers, reject codes,
+    // status letters) and stay readable; only the body copy loses its values.
+    // Doing it here rather than at query time means a sensitive value never
+    // reaches the queue, the store, or the HTTP surface in the first place.
+    mask_fix_body(out.raw, mask_bodies_);
 
     return true;
 }

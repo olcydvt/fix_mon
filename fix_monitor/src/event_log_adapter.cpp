@@ -1,5 +1,6 @@
 #include "fixmon/adapters.hpp"
 #include "fixmon/fix_parser.hpp"
+#include "fixmon/redact.hpp"
 
 #include <chrono>
 #include <regex>
@@ -115,8 +116,11 @@ bool EventLogAdapter::parse_line(const std::string& line, Event& out) {
     out.session_id   = session_id_;
     out.engine_ts_ns = ts;
     out.ingest_ts_ns = now_ns();
-    out.raw          = line;
-    out.text         = body;
+    // The event log is prose, and engines have been known to echo a failed
+    // logon back into it word for word. Scrubbed on the way in, for the same
+    // reason the message bodies are: what is never stored cannot later escape.
+    out.raw          = redact_free_text(line);
+    out.text         = redact_free_text(body);
 
     for (const Rule& r : rules()) {
         std::smatch m;
@@ -128,7 +132,7 @@ bool EventLogAdapter::parse_line(const std::string& line, Event& out) {
 
         if (r.text_group > 0 && r.text_group < static_cast<int>(m.size())) {
             std::string reason = m[r.text_group].str();
-            if (!reason.empty()) out.text = reason;
+            if (!reason.empty()) out.text = redact_free_text(reason);
         }
         return true;
     }

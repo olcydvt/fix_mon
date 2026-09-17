@@ -344,6 +344,175 @@ static void test_redaction() {
     CHECK(redact_if_sensitive("Password", "hunter2") == std::string(kRedacted),
           "secret value replaced on the way to a human");
     CHECK(redact_if_sensitive("HeartBtInt", "30") == "30", "ordinary value passes through");
+
+    // Engines narrate failures in prose, and that prose reaches /sessions and
+    // the snapshot table verbatim unless something stops it here.
+    const std::string prose = redact_free_text("Invalid password for user TRADER01");
+    CHECK(prose.find("TRADER01") == std::string::npos,
+          "the value following a credential word is masked");
+    CHECK(prose.find("Invalid") != std::string::npos && prose.find("user") != std::string::npos,
+          "the sentence stays readable - an operator still learns what failed");
+
+    CHECK(redact_free_text("password=hunter2").find("hunter2") == std::string::npos,
+          "key=value form caught as well as prose");
+    CHECK(redact_free_text("Username: bob").find("bob") == std::string::npos,
+          "colon form caught too");
+
+    // Regression: two connector words between the noun and the value. A window
+    // that closed on the first of them read this line as safe and let the login
+    // name through to /sessions via last_disconnect_reason.
+    CHECK(redact_free_text("password rejected for TRADER01").find("TRADER01")
+              == std::string::npos,
+          "a run of connector words does not close the credential window");
+    CHECK(redact_free_text("Disconnecting: bad password supplied by user JSMITH")
+              .find("JSMITH") == std::string::npos,
+          "and the same holds for the wording an engine actually uses");
+
+    // The other half of the job: not eating the diagnosis it is protecting.
+    CHECK(redact_free_text("Received logout") == "Received logout",
+          "ordinary prose is returned untouched");
+    CHECK(redact_free_text("MsgSeqNum too low, expecting 5 but received 2")
+              == "MsgSeqNum too low, expecting 5 but received 2",
+          "a sequence gap message survives intact - it is the whole diagnosis");
+    CHECK(redact_free_text("").empty(), "empty text does not throw");
+}
+
+static void test_body_masking() {
+    std::cout << "\n[body masking]\n";
+
+    // A Logon carries Username and Password in clear text, and the engine logs
+    // it like any other message. This is what makes masking a correctness
+    // requirement rather than a preference.
+    std::string logon =
+            "8=FIX.4.4|35=A|34=1|49=BROKER1|56=VENUEX|98=0|108=30|553=trader01|554=hunter2|10=1|";
+    mask_fix_body(logon, true);
+    CHECK(logon.find("hunter2") == std::string::npos, "password never survives into the body");
+    CHECK(logon.find("trader01") == std::string::npos, "nor the username");
+    CHECK(logon.find("554=") != std::string::npos,
+          "the tag itself stays, so a reader knows the field was there");
+    CHECK(logon.find("35=A") != std::string::npos, "message type untouched");
+    CHECK(logon.find("34=1|") != std::string::npos, "sequence number untouched");
+    CHECK(logon.find("108=30") != std::string::npos, "heartbeat interval untouched");
+
+    // Business masking is policy, so both settings have to behave.
+    const std::string order =
+            "8=FIX.4.4|35=D|34=7|49=BROKER1|56=VENUEX|11=ORD-7|55=VOD.L|54=1|38=5000|44=123.45|10=9|";
+
+    std::string masked = order;
+    mask_fix_body(masked, true);
+    CHECK(masked.find("ORD-7") == std::string::npos, "client order id masked");
+    CHECK(masked.find("VOD.L") == std::string::npos, "symbol masked");
+    CHECK(masked.find("123.45") == std::string::npos, "price masked");
+    CHECK(masked.find("5000") == std::string::npos, "quantity masked");
+    CHECK(masked.find(std::string("11=") + kMasked) != std::string::npos,
+          "masked marker is distinct from redacted - policy, not a secret");
+    CHECK(masked.find("34=7|") != std::string::npos,
+          "sequence number survives: diagnosis runs on it");
+    CHECK(masked.find("49=BROKER1") != std::string::npos,
+          "comp ids survive: they are how a session is identified at all");
+
+    std::string kept = order;
+    mask_fix_body(kept, false);
+    CHECK(kept == order, "business masking off leaves an ordinary order untouched");
+
+    // ...but a credential is never a policy choice.
+    std::string creds_only = "8=FIX.4.4|35=A|554=hunter2|11=ORD-7|";
+    mask_fix_body(creds_only, false);
+    CHECK(creds_only.find("hunter2") == std::string::npos,
+          "credential masked even with business masking off");
+    CHECK(creds_only.find("ORD-7") != std::string::npos, "business value left alone there");
+
+    // RawData(96) declares its length and is allowed to contain SOH. Splitting
+    // on the separator would copy the tail of the secret straight through.
+    std::string raw = "8=FIX.4.4\x01" "35=A\x01" "95=11\x01" "96=AB\x01" "CD\x01" "EFGHI\x01"
+                      "108=30\x01";
+    mask_fix_body(raw, true);
+    CHECK(raw.find("EFGHI") == std::string::npos,
+          "a SOH inside RawData does not let the tail escape");
+    CHECK(raw.find("108=30") != std::string::npos,
+          "and the field after RawData is still found");
+
+    // Degenerate input must not throw, hang, or corrupt what it cannot parse.
+    std::string empty;
+    mask_fix_body(empty, true);
+    CHECK(empty.empty(), "empty body survives");
+
+    std::string junk = "not a fix message at all";
+    mask_fix_body(junk, true);
+    CHECK(junk == "not a fix message at all", "non-FIX text passes through unchanged");
+
+    std::string truncated = "8=FIX.4.4|554=";
+    mask_fix_body(truncated, true);
+    CHECK(truncated == "8=FIX.4.4|554=", "an empty credential value has nothing to mask");
+
+    std::string no_sep = "8=FIX.4.4|58=price is 44=99 apparently|";
+    mask_fix_body(no_sep, true);
+    CHECK(no_sep.find("44=99") != std::string::npos,
+          "an '=' inside free text does not shift the tag boundary");
+
+    // Regression: tag 58 is neither a credential tag nor a business tag, so
+    // both tiers skipped it and a password walked into the stored body while
+    // the derived text column beside it was already clean.
+    std::string reject = "8=FIX.4.4|35=3|34=3|45=2|58=Invalid password for user TRADER01|10=1|";
+    mask_fix_body(reject, true);
+    CHECK(reject.find("TRADER01") == std::string::npos,
+          "free text inside the body is scrubbed, not skipped");
+    CHECK(reject.find("Invalid password for user") != std::string::npos,
+          "and the readable part of the reject survives");
+    CHECK(reject.find("45=2") != std::string::npos, "ref seq num still there");
+
+    std::string gap = "8=FIX.4.4|35=3|58=MsgSeqNum too low, expecting 5 but received 2|10=1|";
+    const std::string gap_before = gap;
+    mask_fix_body(gap, true);
+    CHECK(gap == gap_before,
+          "a sequence gap reject passes through whole - it is the whole diagnosis");
+
+    // EncodedText mirrors Text in another charset. We cannot scrub what we
+    // cannot decode, and it is length-prefixed, so it goes entirely.
+    std::string enc = "8=FIX.4.4\x01" "35=3\x01" "354=8\x01" "355=pw\x01" "12345\x01" "34=9\x01";
+    mask_fix_body(enc, true);
+    CHECK(enc.find("12345") == std::string::npos,
+          "encoded text is dropped whole, including past an embedded SOH");
+    CHECK(enc.find("34=9") != std::string::npos, "and the field after it is still found");
+}
+
+// Masking has to happen where the Event is built, not at query time: a value
+// that never enters the Event cannot leak from the store or the HTTP surface.
+static void test_adapter_masks_on_ingest() {
+    std::cout << "\n[masking on ingest]\n";
+
+    MessageLogAdapter on(make_cfg(), true, 100, true);
+    Event ev;
+    CHECK(on.parse_line(
+              "20240115-09:30:00.100 : 8=FIX.4.4|9=70|35=A|34=1|49=BROKER1|56=VENUEX|"
+              "553=trader01|554=hunter2|98=0|108=30|10=1|",
+              ev),
+          "logon with credentials parses");
+    CHECK(ev.raw.find("hunter2") == std::string::npos,
+          "the password is gone before the event leaves the adapter");
+    CHECK(ev.msg_type == "A" && ev.msg_seq_num == 1,
+          "the fields diagnosis needs were lifted out before masking");
+
+    MessageLogAdapter off(make_cfg(), true, 100, false);
+    Event ev2;
+    CHECK(off.parse_line(
+              "20240115-09:30:00.200 : 8=FIX.4.4|9=70|35=D|34=2|49=BROKER1|56=VENUEX|"
+              "11=ORD-7|554=hunter2|10=1|",
+              ev2),
+          "order parses with business masking off");
+    CHECK(ev2.raw.find("hunter2") == std::string::npos,
+          "credentials still masked when body masking is off");
+    CHECK(ev2.raw.find("ORD-7") != std::string::npos,
+          "business detail retained when the operator asked for it");
+
+    Event ev3;
+    CHECK(off.parse_line(
+              "20240115-09:30:00.300 : 8=FIX.4.4|35=3|34=3|49=VENUEX|56=BROKER1|"
+              "58=Invalid password for user TRADER01|10=1|",
+              ev3),
+          "reject with prose in tag 58 parses");
+    CHECK(ev3.text.find("TRADER01") == std::string::npos,
+          "tag 58 is free text and gets the same scrub as an engine log line");
 }
 
 static void test_metric_label_guard() {
@@ -360,6 +529,11 @@ static void test_metric_label_guard() {
           "counters are guarded by the same rule as gauges");
     CHECK(reg.gauge("fixmon_session_info", {{"session", "s"}, {"begin_string", "FIX.4.4"}}) != nullptr,
           "ordinary labels still work");
+    CHECK(reg.gauge("fixmon_session_info",
+                    {{"session", "s2"},
+                     {"seq_reset_policy", "persistent"},
+                     {"resend_capability", "gap_fill_only"}}) != nullptr,
+          "the sequence policy labels are not mistaken for credentials");
 }
 
 static void test_config() {
@@ -437,6 +611,133 @@ static void test_quickfix_settings() {
           "credential recorded by name, so an operator sees it was ignored on purpose");
     CHECK(s.sessions[1].redacted_keys.size() == 2,
           "session-level credential added to the one inherited from [DEFAULT]");
+}
+
+// The four settings that decide what a sequence gap means. Everything here is
+// about not answering when we were not told, because a confident wrong answer
+// is the failure mode this whole feature exists to prevent.
+static void test_sequence_settings() {
+    std::cout << "\n[sequence settings]\n";
+
+    CHECK(parse_tristate("Y") == TriState::Yes, "Y as QuickFIX writes it");
+    CHECK(parse_tristate("N") == TriState::No, "N likewise");
+    CHECK(parse_tristate("y") == TriState::Yes, "lower case accepted");
+    CHECK(parse_tristate("1") == TriState::Yes && parse_tristate("0") == TriState::No,
+          "1/0 accepted - deployments use them");
+    CHECK(parse_tristate("true") == TriState::Yes && parse_tristate("false") == TriState::No,
+          "true/false accepted too");
+    CHECK(parse_tristate("") == TriState::Unknown, "an empty value is not a No");
+    CHECK(parse_tristate("maybe") == TriState::Unknown, "and neither is junk");
+
+    // ---- read from the engine's own file ----
+    std::istringstream cfg(
+        "[DEFAULT]\n"
+        "ConnectionType=initiator\n"
+        "SenderCompID=BROKER1\n"
+        "FileLogPath=/nonexistent\n"
+        "ResetOnLogon=Y\n"
+        "PersistMessages=N\n"
+        "[SESSION]\n"
+        "BeginString=FIX.4.4\nTargetCompID=VENUEX\n"
+        "[SESSION]\n"
+        "BeginString=FIX.4.4\nTargetCompID=VENUEY\n"
+        "ResetOnLogon=N\nResetOnLogout=N\nResetOnDisconnect=N\nPersistMessages=Y\n");
+
+    QuickFixSettings s = parse_quickfix_settings(cfg, "seq.cfg");
+    CHECK(s.sessions[0].get_bool("ResetOnLogon") == TriState::Yes,
+          "ResetOnLogon inherited from [DEFAULT]");
+    CHECK(s.sessions[1].get_bool("ResetOnLogon") == TriState::No,
+          "the session block overrides it");
+    CHECK(s.sessions[0].get_bool("ResetOnLogout") == TriState::Unknown,
+          "a setting nobody wrote down stays unknown rather than defaulting to N");
+
+    std::vector<SessionConfig> derived = sessions_from_quickfix(s, nullptr);
+    CHECK(derived.size() == 2, "both sessions derived");
+    CHECK(derived[0].reset_on_logon == TriState::Yes, "flag reaches SessionConfig");
+    CHECK(derived[0].persist_messages == TriState::No, "and so does PersistMessages");
+
+    // ---- what the flags add up to ----
+    CHECK(std::string(derived[0].seq_reset_policy()) == "reset_each_logon",
+          "ResetOnLogon=Y dominates: starting at 1 again is expected here");
+    CHECK(std::string(derived[0].resend_capability()) == "gap_fill_only",
+          "PersistMessages=N means a resend request can never be honoured");
+    CHECK(std::string(derived[1].seq_reset_policy()) == "persistent",
+          "all three reset flags off means a gap is a real gap");
+    CHECK(std::string(derived[1].resend_capability()) == "full",
+          "and this one can actually replay");
+
+    SessionConfig bare;
+    CHECK(std::string(bare.seq_reset_policy()) == "unknown",
+          "a session with no engine config behind it says so");
+    CHECK(std::string(bare.resend_capability()) == "unknown",
+          "rather than claiming the QuickFIX default as fact");
+
+    SessionConfig partial;
+    partial.reset_on_logon = TriState::No;
+    CHECK(std::string(partial.seq_reset_policy()) == "unknown",
+          "one flag known and two missing is still not enough to claim persistence");
+
+    SessionConfig on_logout;
+    on_logout.reset_on_logon      = TriState::No;
+    on_logout.reset_on_disconnect = TriState::Yes;
+    CHECK(std::string(on_logout.seq_reset_policy()) == "reset_each_logout",
+          "ResetOnDisconnect=Y is reported even when ResetOnLogon is off");
+}
+
+static void test_sequence_settings_merge() {
+    std::cout << "\n[sequence settings merge]\n";
+    namespace fs = std::filesystem;
+    const fs::path root = temp_dir("fixmon_seq_merge");
+    fs::remove_all(root);
+
+    write_file(root / "logs" / "FIX.4.4-BROKER1-VENUEX.messages.current.log", "");
+    write_file(root / "logs" / "FIX.4.4-BROKER1-VENUEY.messages.current.log", "");
+
+    write_file(root / "engine.cfg",
+               "[DEFAULT]\n"
+               "ConnectionType=initiator\n"
+               "SenderCompID=BROKER1\n"
+               "FileLogPath=logs\n"
+               "ResetOnLogon=Y\n"
+               "ResetOnLogout=N\n"
+               "ResetOnDisconnect=N\n"
+               "PersistMessages=Y\n"
+               "[SESSION]\nBeginString=FIX.4.4\nTargetCompID=VENUEX\n"
+               "[SESSION]\nBeginString=FIX.4.4\nTargetCompID=VENUEY\n");
+
+    // VENUEX corrects the engine; VENUEY says nothing and should inherit.
+    write_file(root / "fixmon.ini",
+               "[global]\n"
+               "quickfix_config = engine.cfg\n"
+               "[session]\n"
+               "begin_string   = FIX.4.4\n"
+               "sender_comp_id = BROKER1\n"
+               "target_comp_id = VENUEX\n"
+               "reset_on_logon = N\n");
+
+    AppConfig c = load_config((root / "fixmon.ini").string());
+    auto find_session = [&](const std::string& id) -> const SessionConfig* {
+        for (const auto& s : c.sessions) {
+            if (s.session_id() == id) return &s;
+        }
+        return nullptr;
+    };
+    const SessionConfig* x = find_session("FIX.4.4:BROKER1->VENUEX");
+    const SessionConfig* y = find_session("FIX.4.4:BROKER1->VENUEY");
+    CHECK(x != nullptr && y != nullptr, "both sessions present");
+
+    CHECK(x && x->reset_on_logon == TriState::No,
+          "an explicit ini value wins - how an operator corrects an engine cfg they cannot edit");
+    CHECK(x && x->persist_messages == TriState::Yes,
+          "the settings the ini stayed quiet about still come from the engine");
+    CHECK(x && std::string(x->seq_reset_policy()) == "persistent",
+          "and the derived policy follows the corrected flag, not the engine's");
+    CHECK(y && y->reset_on_logon == TriState::Yes,
+          "a session with no override takes the engine's answer");
+    CHECK(y && std::string(y->seq_reset_policy()) == "reset_each_logon",
+          "two sessions off one engine cfg can legitimately disagree");
+
+    fs::remove_all(root);
 }
 
 static void test_quickfix_discovery() {
@@ -640,6 +941,37 @@ static void test_store() {
     store.write_snapshot(snap, now_ns());
     CHECK(store.write_errors() == 0, "snapshot written");
 
+    // ---- retention ----
+    // Everything above is stamped now, so a cutoff of thirty days ago must
+    // leave all of it alone and take only what we deliberately backdate.
+    const int64_t day_ns = 86400LL * 1000000000LL;
+    const int64_t now    = now_ns();
+
+    Event old_ev;
+    old_ev.event_class  = EventClass::FixMessage;
+    old_ev.source       = Source::MessageLog;
+    old_ev.session_id   = "FIX.4.4:BROKER1->VENUEX";
+    old_ev.msg_type     = "0";
+    old_ev.engine_ts_ns = now - 400 * day_ns;
+    old_ev.ingest_ts_ns = old_ev.engine_ts_ns;
+    store.stage(old_ev);
+    store.flush();
+
+    SessionSnapshot old_snap;
+    old_snap.session_id = "FIX.4.4:BROKER1->VENUEX";
+    old_snap.state      = LinkState::Disconnected;
+    store.write_snapshot(old_snap, now - 400 * day_ns);
+
+    std::string perr;
+    const size_t purged = store.purge_before(now - 30 * day_ns, perr);
+    CHECK(perr.empty(), "purge reports no sqlite error");
+    CHECK(purged == 2, "the aged event and the aged snapshot both go");
+    CHECK(store.rows_purged() == 2, "purge count exposed for the metric to mirror");
+
+    const size_t again = store.purge_before(now - 30 * day_ns, perr);
+    CHECK(again == 0, "a second pass finds nothing - recent rows are untouched");
+    CHECK(store.write_errors() == 0, "purging is not a write error");
+
     store.close();
     std::cout << "  (db left at " << path.string() << " for inspection)\n";
 }
@@ -656,9 +988,13 @@ int main() {
     test_queue();
     test_metrics();
     test_redaction();
+    test_body_masking();
+    test_adapter_masks_on_ingest();
     test_metric_label_guard();
     test_config();
     test_quickfix_settings();
+    test_sequence_settings();
+    test_sequence_settings_merge();
     test_quickfix_discovery();
     test_quickfix_merge();
     test_quickfix_wildcard();

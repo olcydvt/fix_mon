@@ -3,6 +3,7 @@
 #include "fixmon/quickfix_config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -76,6 +77,14 @@ void fill_from_quickfix(SessionConfig& dst, const SessionConfig& src) {
     if (dst.reconnect_interval == 0)    dst.reconnect_interval = src.reconnect_interval;
     if (dst.origin.empty())             dst.origin             = src.origin;
 
+    // Unknown means the [session] block said nothing, so the engine's answer is
+    // the only one there is. An explicit yes/no in the ini still wins, which is
+    // how an operator corrects an engine config they cannot edit.
+    if (dst.reset_on_logon == TriState::Unknown)      dst.reset_on_logon      = src.reset_on_logon;
+    if (dst.reset_on_logout == TriState::Unknown)     dst.reset_on_logout     = src.reset_on_logout;
+    if (dst.reset_on_disconnect == TriState::Unknown) dst.reset_on_disconnect = src.reset_on_disconnect;
+    if (dst.persist_messages == TriState::Unknown)    dst.persist_messages    = src.persist_messages;
+
     dst.from_quickfix = true;
     for (const auto& key : src.redacted_settings) {
         if (std::find(dst.redacted_settings.begin(), dst.redacted_settings.end(), key) ==
@@ -140,6 +149,57 @@ std::string SessionConfig::session_id() const {
     return id;
 }
 
+const char* to_string(TriState v) {
+    switch (v) {
+        case TriState::Yes: return "yes";
+        case TriState::No:  return "no";
+        default:            return "unknown";
+    }
+}
+
+TriState parse_tristate(std::string_view v) {
+    if (v.size() == 1) {
+        switch (v[0]) {
+            case 'Y': case 'y': case '1': return TriState::Yes;
+            case 'N': case 'n': case '0': return TriState::No;
+            default:                      return TriState::Unknown;
+        }
+    }
+    std::string l;
+    l.reserve(v.size());
+    for (char c : v) l.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (l == "true"  || l == "yes") return TriState::Yes;
+    if (l == "false" || l == "no")  return TriState::No;
+    return TriState::Unknown;
+}
+
+const char* SessionConfig::seq_reset_policy() const {
+    // Order matters. ResetOnLogon is the strongest of the three: if numbers
+    // restart at every logon then what the other two do never becomes visible,
+    // so reporting them instead would describe a case that cannot arise.
+    if (reset_on_logon == TriState::Yes) return "reset_each_logon";
+    if (reset_on_logout == TriState::Yes || reset_on_disconnect == TriState::Yes) {
+        return "reset_each_logout";
+    }
+    // Only claim persistence once something actually told us so. All three
+    // reading Unknown means we never saw an engine config, and "persistent" is
+    // a statement about configuration, not a default to fall back on.
+    if (reset_on_logon == TriState::No &&
+        reset_on_logout == TriState::No &&
+        reset_on_disconnect == TriState::No) {
+        return "persistent";
+    }
+    return "unknown";
+}
+
+const char* SessionConfig::resend_capability() const {
+    switch (persist_messages) {
+        case TriState::Yes: return "full";
+        case TriState::No:  return "gap_fill_only";
+        default:            return "unknown";
+    }
+}
+
 AppConfig load_config(const std::string& path,
                       const std::vector<std::string>& extra_quickfix_configs) {
     std::ifstream in(path);
@@ -189,6 +249,14 @@ AppConfig load_config(const std::string& path,
             else if (key == "session_qualifier")  current.session_qualifier = val;
             else if (key == "sender_sub_id")      current.sender_sub_id     = val;
             else if (key == "target_sub_id")      current.target_sub_id     = val;
+            // Only worth setting by hand when the engine cfg is out of reach -
+            // on another host, or in a format we were not pointed at. Getting
+            // these wrong is worse than leaving them unknown, because a wrong
+            // answer here is still delivered as an answer.
+            else if (key == "reset_on_logon")      current.reset_on_logon      = parse_tristate(val);
+            else if (key == "reset_on_logout")     current.reset_on_logout     = parse_tristate(val);
+            else if (key == "reset_on_disconnect") current.reset_on_disconnect = parse_tristate(val);
+            else if (key == "persist_messages")    current.persist_messages    = parse_tristate(val);
             else if (key == "heartbeat_interval") {
                 current.heartbeat_interval = std::stoi(val);
                 current.heartbeat_explicit = true;
@@ -197,12 +265,15 @@ AppConfig load_config(const std::string& path,
             if      (key == "db_path")          cfg.db_path        = val;
             else if (key == "metrics_port")     cfg.metrics_port   = static_cast<uint16_t>(std::stoi(val));
             else if (key == "queue_size")       cfg.queue_capacity = next_pow2(std::stoul(val));
+            else if (key == "queue_full_wait_ms") cfg.queue_full_wait_ms = std::stoi(val);
             else if (key == "batch_size")       cfg.batch_size     = std::stoul(val);
             else if (key == "batch_flush_ms")   cfg.batch_flush_ms = std::stoi(val);
             else if (key == "poll_interval_ms") cfg.poll_interval_ms = std::stoi(val);
             else if (key == "from_beginning")   cfg.from_beginning = to_bool(val);
             else if (key == "stale_after_multiple") cfg.stale_after_multiple = std::stoi(val);
             else if (key == "snapshot_interval_s")  cfg.snapshot_interval_s  = std::stoi(val);
+            else if (key == "mask_message_bodies")  cfg.mask_message_bodies  = to_bool(val);
+            else if (key == "retention_days")       cfg.retention_days       = std::stoi(val);
             // Repeatable: one engine cfg per line, or several comma separated.
             else if (key == "quickfix_config") {
                 std::istringstream parts(val);

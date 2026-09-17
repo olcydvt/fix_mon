@@ -40,6 +40,12 @@ uint64_t SessionRegistry::apply(const Event& ev) {
     int64_t ts = ev.engine_ts_ns != 0 ? ev.engine_ts_ns : ev.ingest_ts_ns;
     if (ts > s.last_event_ts_ns) s.last_event_ts_ns = ts;
 
+    // Only meaningful when the engine actually stamped the line; a fallback to
+    // ingest time would make the skew read zero and hide the problem.
+    if (ev.engine_ts_ns != 0 && ev.ingest_ts_ns != 0) {
+        s.clock_skew_ns = ev.ingest_ts_ns - ev.engine_ts_ns;
+    }
+
     uint64_t gap = 0;
 
     if (ev.event_class == EventClass::FixMessage) {
