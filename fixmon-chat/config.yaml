@@ -1,0 +1,60 @@
+# fixmon-chat configuration
+#
+# The provider is one line. Everything above the adapter layer - the tools,
+# their schemas, the descriptions that actually decide answer quality - is
+# provider independent, so changing this line changes the model and nothing
+# else. Conversations already in progress keep working, because history is
+# stored in a neutral shape and converted per request.
+
+provider: local        # deepseek | openai | anthropic | gemini | local
+
+providers:
+  deepseek:
+    kind: openai_compat            # DeepSeek speaks the OpenAI wire format
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+
+  openai:
+    kind: openai_compat
+    base_url: https://api.openai.com
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+
+  anthropic:
+    kind: anthropic
+    base_url: https://api.anthropic.com
+    model: claude-sonnet-4-5
+    api_key_env: ANTHROPIC_API_KEY
+
+  gemini:
+    kind: gemini
+    base_url: https://generativelanguage.googleapis.com
+    model: gemini-2.0-flash
+    api_key_env: GEMINI_API_KEY
+
+  # Anything OpenAI-compatible and self-hosted: vLLM, Ollama, LM Studio.
+  # Nothing leaves the network on this one, which is the point.
+  local:
+    kind: openai_compat
+    base_url: http://localhost:11434/v1
+    model: qwen2.5-fixmon
+    api_key_env: LOCAL_API_KEY     # usually unused, keep a dummy value set
+
+# Where fixmon puts its data. The collector is never written to - the HTTP
+# endpoints are GET only and the database is opened read-only.
+fixmon:
+  base_url: http://127.0.0.1:9109
+  db_path: /var/tmp/fixmon-live.db
+
+limits:
+  # A runaway model calling tools in a circle burns tokens and wall time.
+  max_tool_rounds: 3
+  # Rows a single tool may return. The context window is the real budget here;
+  # a thousand-row answer crowds out the reasoning that was supposed to use it.
+  max_rows: 50
+  request_timeout_s: 600
+
+audit:
+  path: ./audit.log
+

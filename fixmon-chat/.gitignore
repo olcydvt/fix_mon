@@ -1,0 +1,24 @@
+# The audit trail holds operator questions verbatim, and questions name
+# counterparties and sessions. It is a record to keep, not a record to publish.
+audit.log
+*.audit.log
+
+# Local overrides. config.yaml itself is committed - it holds no secrets, only
+# which provider and which endpoints - but a deployment-specific copy is not.
+config.local.yaml
+.env
+
+# Never a copy of the collector's store here. Reading it is the whole design;
+# keeping a second copy next to the chat app is the shadow-record problem again.
+*.db
+*.db-shm
+*.db-wal
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+

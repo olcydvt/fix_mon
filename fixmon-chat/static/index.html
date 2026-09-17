@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fixmon chat</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #d7dbe3; --dim: #8b93a5; --accent: #4f9cf9; --warn: #e0a33e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px; background: var(--panel);
+  }
+  header b { font-weight: 600; }
+  header .meta { color: var(--dim); font-size: 12px; margin-left: auto; }
+  #log { flex: 1; overflow-y: auto; padding: 20px 16px; }
+  .turn { max-width: 860px; margin: 0 auto 18px; }
+  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+         color: var(--dim); margin-bottom: 5px; }
+  .body { white-space: pre-wrap; word-wrap: break-word; }
+  .user .body {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px;
+  }
+  .tools {
+    margin-top: 8px; font-size: 12px; color: var(--dim);
+    border-left: 2px solid var(--line); padding-left: 10px;
+  }
+  .err { color: var(--warn); }
+  form {
+    display: flex; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid var(--line); background: var(--panel);
+  }
+  .wrap { max-width: 860px; margin: 0 auto; display: flex; gap: 8px; width: 100%; }
+  input[type=text] {
+    flex: 1; background: var(--bg); border: 1px solid var(--line);
+    color: var(--text); border-radius: 6px; padding: 10px 12px; font: inherit;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--accent); border: 0; color: #08121f; font-weight: 600;
+    border-radius: 6px; padding: 10px 18px; cursor: pointer; font: inherit;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--dim); max-width: 860px; margin: 0 auto 18px; font-size: 13px; }
+  .hint code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <b>fixmon</b>
+  <span style="color:var(--dim)">session assistant</span>
+  <span class="meta" id="meta">…</span>
+</header>
+
+<div id="log">
+  <div class="hint">
+    Ask about the sessions being monitored. For example:
+    <code>list the sessions</code>,
+    <code>what happened on VENUEX?</code>,
+    <code>why did it disconnect?</code>
+  </div>
+</div>
+
+<form id="form">
+  <div class="wrap">
+    <input type="text" id="input" autocomplete="off" placeholder="Ask about a session…" autofocus>
+    <button id="send" type="submit">Send</button>
+  </div>
+</form>
+
+<script>
+// The conversation id is the only client-side state. History lives on the
+// server, keyed by this id and the user - the browser never holds the context
+// that gets sent to the model.
+let conversationId = null;
+
+// Stand-in for real authentication. Replace with whatever the reverse proxy
+// or identity provider injects; the server treats this header as the truth.
+const USER = new URLSearchParams(location.search).get("user") || "operator";
+
+const log = document.getElementById("log");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+
+function turn(who, text, cls = "") {
+  const el = document.createElement("div");
+  el.className = "turn " + cls;
+  el.innerHTML = `<div class="who">${who}</div><div class="body"></div>`;
+  el.querySelector(".body").textContent = text;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+fetch("/api/info", { headers: { "X-User": USER } })
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById("meta").textContent =
+      `${d.provider} · ${d.model} · ${d.tools.length} tools · ${d.user}`;
+  })
+  .catch(() => { document.getElementById("meta").textContent = "backend unreachable"; });
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+
+  turn("you", text, "user");
+  input.value = "";
+  send.disabled = true;
+
+  const pending = turn("assistant", "thinking…");
+
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-User": USER },
+      body: JSON.stringify({ message: text, conversation_id: conversationId }),
+    });
+
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+
+    const d = await r.json();
+    conversationId = d.conversation_id;
+    pending.querySelector(".body").textContent = d.reply;
+
+    if (d.tools_used.length) {
+      const note = document.createElement("div");
+      note.className = "tools";
+      const counts = d.tools_used.reduce((a, t) => (a[t] = (a[t] || 0) + 1, a), {});
+      const summary = Object.entries(counts)
+        .map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(", ");
+      note.textContent =
+        `${summary} · ${d.rounds} round${d.rounds > 1 ? "s" : ""} · ` +
+        `${d.usage.prompt + d.usage.completion} tokens`;
+      pending.appendChild(note);
+    }
+  } catch (err) {
+    pending.querySelector(".body").className = "body err";
+    pending.querySelector(".body").textContent = "Error: " + err.message;
+  } finally {
+    send.disabled = false;
+    input.focus();
+  }
+});
+</script>
+</body>
+</html>
+
